@@ -1,0 +1,44 @@
+{
+  "profiles": {
+    "anonymous": {
+      "ownerName": "",
+      "businessName": "",
+      "businessType": "",
+      "cityArea": "",
+      "preferredLanguage": "",
+      "offerDescription": "",
+      "customerType": "",
+      "priceRange": "",
+      "businessModel": "",
+      "teamSize": "",
+      "businessStage": "",
+      "mainGoal": "",
+      "secondaryGoal": "",
+      "currentFocus": "",
+      "budgetLevel": "",
+      "keyConstraint1": "",
+      "keyConstraint2": "",
+      "notes": ""
+    },
+    "u_ss44nx_40gmail.com": {
+      "ownerName": "",
+      "businessName": "",
+      "businessType": "Super Market",
+      "cityArea": "",
+      "preferredLanguage": "",
+      "offerDescription": "",
+      "customerType": "",
+      "priceRange": "",
+      "businessModel": "",
+      "teamSize": "",
+      "businessStage": "",
+      "mainGoal": "",
+      "secondaryGoal": "",
+      "currentFocus": "",
+      "budgetLevel": "",
+      "keyConstraint1": "",
+      "keyConstraint2": "",
+      "notes": ""
+    }
+  }
+}

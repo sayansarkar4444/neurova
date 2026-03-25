@@ -1,0 +1,195 @@
+@import "tailwindcss";
+
+:root {
+  --background: #08111f;
+  --foreground: #e6eef8;
+  --surface-gradient:
+    radial-gradient(circle at top, rgba(56, 189, 248, 0.14), transparent 34%),
+    linear-gradient(180deg, #0a1628 0%, #08111f 100%);
+  --font-geist-sans: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  --font-geist-mono: "Cascadia Mono", "Consolas", "Courier New", monospace;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+[data-theme="light"] {
+  --background: #f4f8ff;
+  --foreground: #10233d;
+  --surface-gradient:
+    radial-gradient(circle at top, rgba(14, 165, 233, 0.2), transparent 32%),
+    linear-gradient(180deg, #f5fbff 0%, #e9f2ff 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--surface-gradient);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  min-height: 100vh;
+}
+
+.chat-scrollbar {
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.32) transparent;
+}
+
+.chat-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chat-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: rgba(148, 163, 184, 0.28);
+}
+
+.chat-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.42);
+}
+
+.manager-card {
+  backdrop-filter: blur(18px);
+}
+
+@keyframes chatMessageIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes managerCardIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.message-enter {
+  animation: chatMessageIn 220ms ease-out both;
+}
+
+.manager-enter {
+  animation: managerCardIn 260ms ease-out both;
+}
+
+.manager-card ol {
+  margin: 0;
+}
+
+.manager-card li::marker {
+  color: rgba(125, 211, 252, 0.92);
+}
+
+@keyframes neuralxDotPulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-1px);
+  }
+}
+
+.thinking-message {
+  transition: opacity 180ms ease, filter 180ms ease;
+}
+
+.thinking-label {
+  color: rgba(203, 213, 225, 0.78);
+  font-style: italic;
+}
+
+.thinking-wave {
+  margin-left: 0.34rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.19rem;
+  vertical-align: middle;
+}
+
+.thinking-wave-dot {
+  width: 0.32rem;
+  height: 0.32rem;
+  border-radius: 9999px;
+  background: rgba(186, 230, 253, 0.56);
+  transform: translateY(0);
+  opacity: 0.45;
+  transition:
+    transform 180ms ease,
+    opacity 180ms ease,
+    background-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.thinking-wave-dot.is-trailing {
+  transform: translateY(-1px);
+  opacity: 0.72;
+  background: rgba(186, 230, 253, 0.78);
+}
+
+.thinking-wave-dot.is-active {
+  transform: translateY(-2px);
+  opacity: 1;
+  background: rgba(224, 242, 254, 0.98);
+  box-shadow: 0 0 0 1px rgba(186, 230, 253, 0.18);
+}
+
+.button-thinking-wave .thinking-wave-dot {
+  width: 0.26rem;
+  height: 0.26rem;
+  background: rgba(2, 6, 23, 0.36);
+}
+
+.button-thinking-wave .thinking-wave-dot.is-trailing {
+  background: rgba(2, 6, 23, 0.6);
+}
+
+.button-thinking-wave .thinking-wave-dot.is-active {
+  background: rgba(2, 6, 23, 0.88);
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-scrollbar {
+    scroll-behavior: auto;
+  }
+
+  .message-enter,
+  .manager-enter {
+    animation: none !important;
+  }
+
+  .thinking-wave-dot {
+    transition: none !important;
+  }
+}

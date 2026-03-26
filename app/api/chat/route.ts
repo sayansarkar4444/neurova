@@ -762,15 +762,19 @@ export async function POST(request: Request) {
       userSettings,
     });
 
-    console.log("[PROFILE SAVE] updating fields =", result.businessProfile);
-    await writeBusinessProfileToDb(userId, result.businessProfile);
+    const safeBusinessProfile = normalizeBusinessProfile(
+      result.businessProfile ?? EMPTY_BUSINESS_PROFILE
+    );
+
+    console.log("[PROFILE SAVE] updating fields =", safeBusinessProfile);
+    await writeBusinessProfileToDb(userId, safeBusinessProfile);
     console.log("[PROFILE SAVE] success/failure = success");
-    console.log("[PROFILE CONTEXT] refreshed profile =", result.businessProfile);
+    console.log("[PROFILE CONTEXT] refreshed profile =", safeBusinessProfile);
 
     return NextResponse.json({
       reply: result.reply,
       sharedContext: result.sharedContext,
-      businessProfile: result.businessProfile,
+      businessProfile: safeBusinessProfile,
       suggestedProfileUpdates: pendingSuggestedUpdates,
     });
   } catch (error) {

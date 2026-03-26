@@ -14,7 +14,15 @@ type ProfileDbPayload = {
   profiles: Record<string, BusinessProfile>;
 };
 
+function isVercelRuntime(): boolean {
+  return Boolean(process.env.VERCEL);
+}
+
 async function readDbPayload(): Promise<ProfileDbPayload> {
+  if (isVercelRuntime()) {
+    return { profiles: {} };
+  }
+
   try {
     const raw = await readFile(PROFILE_DB_PATH, "utf8");
     const parsed = JSON.parse(raw) as unknown;
@@ -52,21 +60,33 @@ async function readDbPayload(): Promise<ProfileDbPayload> {
 export async function readBusinessProfileFromDb(
   userId: string
 ): Promise<BusinessProfile> {
-  const payload = await readDbPayload();
-  return payload.profiles[userId] ?? EMPTY_BUSINESS_PROFILE;
+  try {
+    const payload = await readDbPayload();
+    return payload.profiles[userId] ?? EMPTY_BUSINESS_PROFILE;
+  } catch {
+    return EMPTY_BUSINESS_PROFILE;
+  }
 }
 
 export async function writeBusinessProfileToDb(
   userId: string,
   profile: BusinessProfile
 ): Promise<void> {
+  if (isVercelRuntime()) {
+    return;
+  }
+
   const payload = await readDbPayload();
   payload.profiles[userId] = normalizeBusinessProfile(profile);
 
-  await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(
-    PROFILE_DB_PATH,
-    JSON.stringify(payload, null, 2),
-    "utf8"
-  );
+  try {
+    await mkdir(DATA_DIR, { recursive: true });
+    await writeFile(
+      PROFILE_DB_PATH,
+      JSON.stringify(payload, null, 2),
+      "utf8"
+    );
+  } catch {
+    // Storage failures should never crash API routes.
+  }
 }

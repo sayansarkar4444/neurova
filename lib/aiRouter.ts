@@ -11,6 +11,7 @@ import {
   detectMessageTypes,
   isBusinessProblemIntent,
   isGreetingMessage,
+  isHelperModeIntent,
   isFollowUpMessage,
   isVagueBusinessMessage,
   type MessageType,
@@ -30,7 +31,7 @@ import {
   type BusinessProfileField,
 } from "./businessProfile";
 import { normalizeManagerReply } from "./managerResponse";
-import { runAdvisorProvider, runChatProvider } from "./providers/groq";
+import { runAdvisorProvider, runChatProvider, runHelperProvider } from "./providers/groq";
 import { runDeepseekReasoning } from "./providers/deepseekReasoning";
 import { contentProvider } from "./providers/placeholderContent";
 import {
@@ -55,7 +56,18 @@ type RouteAiMessageParams = {
   userSettings?: UserSettings;
 };
 
-type ProviderName = "chat" | "advisor" | "deepseek-reasoning" | "content";
+type ProviderName = "chat" | "advisor" | "deepseek-reasoning" | "content" | "helper";
+
+type RouteMode = "chat" | "manager" | "helper";
+
+type HelperExecutionState = {
+  currentStep: number;
+  explainedStep: number;
+  completedStep: number;
+  waitingForUserConfirmation: boolean;
+  explainedStepText: string | null;
+  latestUserAskedNextWithoutConfirmation: boolean;
+};
 
 type RouteAiMessageResult = {
   reply: string;
@@ -467,6 +479,231 @@ function hasMinimumDecisionContext(context: ConversationContext): boolean {
   return hasBusinessType && hasMainGoal;
 }
 
+function detectRouteMode({
+  latestUserMessage,
+  selectedMode,
+  businessProblemIntent,
+  messageType,
+}: {
+  latestUserMessage: string;
+  selectedMode: ChatMode;
+  businessProblemIntent: boolean;
+  messageType: MessageType;
+}): RouteMode {
+  if (isHelperModeIntent(latestUserMessage)) {
+    return "helper";
+  }
+
+  if (
+    selectedMode === "manager" ||
+    businessProblemIntent ||
+    messageType === "business_strategy" ||
+    messageType === "seasonal_strategy" ||
+    messageType === "calculation" ||
+    messageType === "marketing_content"
+  ) {
+    return "manager";
+  }
+
+  return "chat";
+}
+
+function isHelperDoneSignal(message: string): boolean {
+  const text = normalizeText(message);
+  if (!text) return false;
+  return [
+    "done",
+    "ho gaya",
+    "hogaya",
+    "ho gya",
+    "completed",
+    "complete",
+    "kardiya",
+    "kar diya",
+    "kiya",
+    "finished",
+  ].some((token) => text.includes(token));
+}
+
+function isHelperNextSignal(message: string): boolean {
+  const text = normalizeText(message);
+  if (!text) return false;
+  return (
+    text === "next" ||
+    text === "aage" ||
+    text === "agla" ||
+    text === "next step" ||
+    text.includes("next") ||
+    text.includes("aage kya") ||
+    text.includes("agla step")
+  );
+}
+
+function extractHelperStepNumberAndText(
+  assistantMessage: string
+): { step: number; text: string } | null {
+  const lines = assistantMessage
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+
+  for (const line of lines) {
+    const match = line.match(/^(?:step\s*)?(\d{1,2})\s*[:.)-]\s*(.+)$/i);
+    if (!match) continue;
+    const step = Number.parseInt(match[1], 10);
+    if (!Number.isFinite(step) || step <= 0) continue;
+    const text = match[2]?.trim() ?? "";
+    return {
+      step,
+      text: text.length > 0 ? text : line,
+    };
+  }
+
+  const inlineStep = assistantMessage.match(/\bstep\s*(\d{1,2})\b/i);
+  if (inlineStep) {
+    const step = Number.parseInt(inlineStep[1], 10);
+    if (Number.isFinite(step) && step > 0) {
+      return {
+        step,
+        text: lines[0],
+      };
+    }
+  }
+
+  return null;
+}
+
+function deriveHelperExecutionState(messages: ChatMessage[]): HelperExecutionState {
+  let explainedStep = 0;
+  let completedStep = 0;
+  let waitingForUserConfirmation = false;
+  let explainedStepText: string | null = null;
+  let latestUserAskedNextWithoutConfirmation = false;
+
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      const parsed = extractHelperStepNumberAndText(message.content);
+      if (!parsed) continue;
+      explainedStep = parsed.step;
+      explainedStepText = parsed.text;
+      waitingForUserConfirmation = true;
+      latestUserAskedNextWithoutConfirmation = false;
+      continue;
+    }
+
+    const userText = message.content;
+    if (isHelperDoneSignal(userText) && waitingForUserConfirmation) {
+      completedStep = Math.max(completedStep, explainedStep);
+      waitingForUserConfirmation = false;
+      latestUserAskedNextWithoutConfirmation = false;
+      continue;
+    }
+
+    if (isHelperNextSignal(userText) && waitingForUserConfirmation) {
+      latestUserAskedNextWithoutConfirmation = true;
+    }
+  }
+
+  if (completedStep > explainedStep) {
+    completedStep = explainedStep;
+  }
+
+  const currentStep = Math.max(1, completedStep + 1);
+  return {
+    currentStep,
+    explainedStep,
+    completedStep,
+    waitingForUserConfirmation,
+    explainedStepText,
+    latestUserAskedNextWithoutConfirmation,
+  };
+}
+
+function buildHelperWaitForDoneReply(
+  state: HelperExecutionState,
+  useEnglish: boolean
+): string {
+  if (useEnglish) {
+    return [
+      "Has this step been completed?",
+      "If yes, reply with 'done'. If not, share exactly where you are stuck.",
+    ].join("\n");
+  }
+
+  return [
+    "Kya yeh step complete ho gaya?",
+    "Agar ho gaya hai to 'done' likho. Agar nahi hua to exactly kahan atke ho woh bhejo.",
+  ].join("\n");
+}
+
+function isHelperDefinitionQuestion(message: string): boolean {
+  const normalized = normalizeText(message);
+  if (!normalized) return false;
+  const asksMeaning =
+    normalized.includes("kya hai") ||
+    normalized.includes("what is") ||
+    normalized.includes("matlab") ||
+    normalized.includes("meaning");
+  if (!asksMeaning) return false;
+
+  return [
+    "webhook",
+    "trigger",
+    "workflow",
+    "node",
+    "api",
+    "credential",
+    "auth",
+    "n8n",
+  ].some((token) => normalized.includes(token));
+}
+
+function extractHelperConcept(message: string): string {
+  const normalized = normalizeText(message);
+  const known = [
+    "webhook",
+    "trigger",
+    "workflow",
+    "node",
+    "api",
+    "credential",
+    "authentication",
+    "n8n",
+  ];
+  const matched = known.find((token) => normalized.includes(token));
+  return matched ?? "this term";
+}
+
+function buildHelperDefinitionReply({
+  concept,
+  state,
+  useEnglish,
+}: {
+  concept: string;
+  state: HelperExecutionState;
+  useEnglish: boolean;
+}): string {
+  const stepText = state.explainedStepText?.trim();
+  if (useEnglish) {
+    return [
+      `${concept} means the point where one system sends data/event to another system automatically.`,
+      stepText
+        ? `Now continue the same current step: ${stepText}`
+        : "Now continue the same current step.",
+      "Ho jaye to 'done' likho.",
+    ].join("\n");
+  }
+
+  return [
+    `${concept} ka matlab hai jahan ek system event/data automatically dusre system ko bhejta hai.`,
+    stepText
+      ? `Ab wahi current step continue karo: ${stepText}`
+      : "Ab wahi current step continue karo.",
+    "Ho jaye to 'done' likho.",
+  ].join("\n");
+}
+
 function buildFastManagerDecisionReply(context: ConversationContext): string {
   const businessType = context.resolvedContext.businessType ?? "business";
   const mainGoal = context.resolvedContext.mainGoal ?? "growth";
@@ -478,7 +715,7 @@ function buildFastManagerDecisionReply(context: ConversationContext): string {
 
   const todayPriority =
     /restaurant|cafe|food/i.test(businessType)
-      ? "Google Maps listing optimize karo."
+      ? "Aaj ek local acquisition experiment run karo: single offer, single channel, 24-hour tracking."
       : "Aaj ek high-impact channel par focused execution karo.";
 
   return [
@@ -493,6 +730,14 @@ function buildFastManagerDecisionReply(context: ConversationContext): string {
     "",
     "Today's Priority:",
     todayPriority,
+    "",
+    "Action Steps:",
+    "1. Ek offer define karo jo customer ko turant action lene pe push kare.",
+    "2. Offer ko ek selected channel par publish/send karo.",
+    "3. 24 ghante me response count note karke next micro-step decide karo.",
+    "",
+    "Watch:",
+    "Primary metric: replies ya leads. Agar 24 ghante me movement low ho, offer line revise karo.",
   ].join("\n");
 }
 
@@ -660,15 +905,113 @@ function isMeaningFollowUp(userMessage: string): boolean {
   ].some((pattern) => text.includes(pattern));
 }
 
+function isHowToFollowUp(userMessage: string): boolean {
+  const text = normalizeText(userMessage);
+  if (!text) return false;
+
+  return [
+    "kaise karun",
+    "kaise karu",
+    "kaise karna hai",
+    "how to",
+    "how do i do",
+    "how should i do",
+    "step by step kaise",
+  ].some((pattern) => text.includes(pattern));
+}
+
+function isTaskClarificationFollowUp(userMessage: string): boolean {
+  const text = normalizeText(userMessage);
+  if (!text) return false;
+
+  const looksLikeQuestion =
+    text.includes("?") || /^(kya|kiya|kia|kaise|what|why|how|do i|should i)\b/i.test(text);
+  if (!looksLikeQuestion) return false;
+
+  return [
+    "sab",
+    "saare",
+    "all",
+    "app",
+    "apps",
+    "channel",
+    "bhej",
+    "send",
+    "kitne",
+    "how many",
+    "padega",
+    "zaroori",
+    "must",
+  ].some((pattern) => text.includes(pattern));
+}
+
+function buildTaskClarificationReply({
+  taskText,
+  userMessage,
+  useEnglish,
+}: {
+  taskText: string;
+  userMessage: string;
+  useEnglish: boolean;
+}): string {
+  const normalizedUserMessage = normalizeText(userMessage);
+  const cleanTaskText = taskText.trim();
+
+  const asksAllChannels =
+    (normalizedUserMessage.includes("sab") ||
+      normalizedUserMessage.includes("saare") ||
+      normalizedUserMessage.includes("all")) &&
+    (normalizedUserMessage.includes("app") ||
+      normalizedUserMessage.includes("apps") ||
+      normalizedUserMessage.includes("channel"));
+  if (asksAllChannels) {
+    return useEnglish
+      ? [
+          "No, you do not need to send on all apps/channels.",
+          `For this task (${cleanTaskText}), use only one channel today so results stay clear.`,
+          "Pick one: WhatsApp or Instagram or Google Maps post.",
+        ].join("\n")
+      : [
+          "Nahi, saare apps/channels par bhejna zaroori nahi hai.",
+          `Is task (${cleanTaskText}) me aaj sirf ek channel use karo taaki result clear aaye.`,
+          "Ek choose karo: WhatsApp ya Instagram ya Google Maps post.",
+        ].join("\n");
+  }
+
+  const asksVolume =
+    normalizedUserMessage.includes("kitne") || normalizedUserMessage.includes("how many");
+  if (asksVolume) {
+    return useEnglish
+      ? [
+          "Use one channel and start with 25 relevant people.",
+          "If 25 is hard today, minimum 15 is fine, but keep the same offer and CTA.",
+        ].join("\n")
+      : [
+          "Ek hi channel use karo aur 25 relevant logon se start karo.",
+          "Agar 25 mushkil lage to minimum 15 chalega, but offer aur CTA same rakho.",
+        ].join("\n");
+  }
+
+  return useEnglish
+    ? [
+        `For this task (${cleanTaskText}), keep it simple: one channel, one offer, one CTA, then measure replies.`,
+        "Ask your next question and I will answer it step by step.",
+      ].join("\n")
+    : [
+        `Is task (${cleanTaskText}) ko simple rakho: ek channel, ek offer, ek CTA, phir replies measure karo.`,
+        "Aap next question poochho, main step by step clear kar dunga.",
+      ].join("\n");
+}
+
 function extractManagerSectionContent(
   reply: string,
-  sectionTitle: "Decision" | "Today's Priority" | "Action Steps"
+  sectionTitle: "Decision" | "Today's Priority" | "Action Steps" | "Next Step"
 ): string | null {
   if (!reply.trim()) return null;
 
   const escapedTitle = sectionTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(
-    `${escapedTitle}\\s*\\n([\\s\\S]*?)(?=\\n\\n(?:Situation|Manager Insight|Decision|Today's Priority|Action Steps|Watch)\\s*\\n|$)`,
+    `${escapedTitle}\\s*\\n([\\s\\S]*?)(?=\\n\\n(?:Situation|Manager Insight|Decision|Today's Priority|Action Steps|Watch|Short Answer|Why|Next Step)\\s*\\n|$)`,
     "i"
   );
   const match = pattern.exec(reply);
@@ -798,8 +1141,29 @@ function isTaskFollowUpMessage(
   );
 }
 
-function buildTaskSpecificSimplificationSteps(taskText: string): string[] {
+function buildTaskSpecificSimplificationSteps(
+  taskText: string,
+  useEnglish = false
+): string[] {
   const normalizedTaskText = normalizeText(taskText);
+
+  if (
+    normalizedTaskText.includes("high-impact channel") ||
+    (normalizedTaskText.includes("focused execution") &&
+      normalizedTaskText.includes("channel"))
+  ) {
+    return useEnglish
+      ? [
+          "Step 1: Pick one channel for today only: WhatsApp broadcast, Instagram DM, or Google Maps post.",
+          "Step 2: Create one simple offer + CTA line (for example: 'Reply YES for today's offer').",
+          "Step 3: Send/post to 25 relevant people and note replies after 24 hours.",
+        ]
+      : [
+          "Step 1: Aaj ke liye sirf ek channel choose karo: WhatsApp broadcast, Instagram DM, ya Google Maps post.",
+          "Step 2: Ek simple offer + CTA line likho (jaise: 'Aaj ke offer ke liye YES reply karo').",
+          "Step 3: 25 relevant logon ko bhejo/post karo aur 24 ghante baad replies count note karo.",
+        ];
+  }
 
   if (normalizedTaskText.includes("bottleneck")) {
     return [
@@ -828,6 +1192,25 @@ function simplifyTask(currentPriority: string): string {
   return [
     `Thik hai. Aaj ka task ${currentPriority} tha. Simple karte hain.`,
     ...buildTaskSpecificSimplificationSteps(currentPriority).slice(0, 4),
+  ].join("\n");
+}
+
+function buildTaskHowToReply(taskText: string, useEnglish: boolean): string {
+  const cleanTaskText = taskText.trim();
+  const steps = buildTaskSpecificSimplificationSteps(cleanTaskText, useEnglish).slice(0, 4);
+
+  if (useEnglish) {
+    return [
+      `Do it like this for today's task: ${cleanTaskText}`,
+      ...steps,
+      "Share the result count after this and I will give the next move.",
+    ].join("\n");
+  }
+
+  return [
+    `Isko aise karo. Aaj ka task: ${cleanTaskText}`,
+    ...steps,
+    "Ye complete karke result count bhejo, main next move de dunga.",
   ].join("\n");
 }
 
@@ -1846,6 +2229,12 @@ export async function routeAiMessage({
         }
       : null;
   const businessProblemIntent = isBusinessProblemIntent(latestUserMessage);
+  const routeMode = detectRouteMode({
+    latestUserMessage,
+    selectedMode: mode,
+    businessProblemIntent,
+    messageType,
+  });
   const stableFieldAnswer = resolveStableFieldAnswer(
     normalizedLatestUserMessage,
     context
@@ -1863,6 +2252,93 @@ export async function routeAiMessage({
   const minimumDecisionContextReady = hasMinimumDecisionContext(context);
   const shouldExitOnboarding =
     forceManagerModeByLimit || minimumDecisionContextReady || skipOnboardingActive;
+  const allowOnboardingFlow = routeMode === "manager";
+  const isShortAcknowledgement =
+    normalizedLatestUserMessage === "ok" ||
+    normalizedLatestUserMessage === "okay" ||
+    normalizedLatestUserMessage === "all right" ||
+    normalizedLatestUserMessage === "alright" ||
+    normalizedLatestUserMessage.includes("thanks") ||
+    normalizedLatestUserMessage.includes("thank");
+
+  if (
+    routeMode === "chat" &&
+    (isIdentityQuestion(normalizedLatestUserMessage) ||
+      isGreetingMessage(latestUserMessage) ||
+      isEverythingFineMessage(normalizedLatestUserMessage) ||
+      isShortAcknowledgement)
+  ) {
+    return {
+      reply: buildNormalChatReply(
+        latestUserMessage,
+        context.sharedContext.conversationLanguage,
+        context.resolvedContext.preferredLanguage || preferredLanguageFromSettings
+      ),
+      messageType: "conversation",
+      provider: "advisor",
+      sharedContext: context.sharedContext,
+      businessProfile: context.resolvedBusinessProfile,
+    };
+  }
+
+  if (routeMode === "helper") {
+    const helperState = deriveHelperExecutionState(messages);
+    const helperUseEnglish = shouldReplyInEnglish(
+      latestUserMessage,
+      context.sharedContext.conversationLanguage,
+      context.resolvedContext.preferredLanguage || preferredLanguageFromSettings
+    );
+    if (
+      helperState.waitingForUserConfirmation &&
+      isHelperDefinitionQuestion(latestUserMessage)
+    ) {
+      return {
+        reply: buildHelperDefinitionReply({
+          concept: extractHelperConcept(latestUserMessage),
+          state: helperState,
+          useEnglish: helperUseEnglish,
+        }),
+        messageType: "conversation",
+        provider: "helper",
+        sharedContext: context.sharedContext,
+        businessProfile: context.resolvedBusinessProfile,
+      };
+    }
+    if (
+      helperState.waitingForUserConfirmation &&
+      helperState.latestUserAskedNextWithoutConfirmation
+    ) {
+      return {
+        reply: buildHelperWaitForDoneReply(helperState, helperUseEnglish),
+        messageType: "conversation",
+        provider: "helper",
+        sharedContext: context.sharedContext,
+        businessProfile: context.resolvedBusinessProfile,
+      };
+    }
+
+    const reply = await runHelperProvider({
+      messages,
+      contextSummary: providerContextSummary,
+      helperState: {
+        currentStep: helperState.currentStep,
+        explainedStep: helperState.explainedStep,
+        completedStep: helperState.completedStep,
+        waitingForUserConfirmation: helperState.waitingForUserConfirmation,
+        explainedStepText: helperState.explainedStepText,
+        latestUserAskedNextWithoutConfirmation:
+          helperState.latestUserAskedNextWithoutConfirmation,
+      },
+    });
+
+    return {
+      reply,
+      messageType: "conversation",
+      provider: "helper",
+      sharedContext: context.sharedContext,
+      businessProfile: context.resolvedBusinessProfile,
+    };
+  }
 
   if (isMeaningFollowUp(normalizedLatestUserMessage) && lastAssistantMessage.trim()) {
     const useEnglish = shouldReplyInEnglish(
@@ -1883,6 +2359,54 @@ export async function routeAiMessage({
     };
   }
 
+  if (isHowToFollowUp(normalizedLatestUserMessage)) {
+    const useEnglish = shouldReplyInEnglish(
+      latestUserMessage,
+      context.sharedContext.conversationLanguage,
+      context.resolvedContext.preferredLanguage || preferredLanguageFromSettings
+    );
+    const followUpTaskText =
+      currentTaskText ??
+      extractManagerSectionContent(lastAssistantMessage, "Today's Priority") ??
+      extractManagerSectionContent(lastAssistantMessage, "Next Step");
+
+    if (followUpTaskText) {
+      return {
+        reply: buildTaskHowToReply(followUpTaskText, useEnglish),
+        messageType: "conversation",
+        provider: "advisor",
+        sharedContext: context.sharedContext,
+        businessProfile: context.resolvedBusinessProfile,
+      };
+    }
+  }
+
+  if (isTaskClarificationFollowUp(normalizedLatestUserMessage)) {
+    const useEnglish = shouldReplyInEnglish(
+      latestUserMessage,
+      context.sharedContext.conversationLanguage,
+      context.resolvedContext.preferredLanguage || preferredLanguageFromSettings
+    );
+    const followUpTaskText =
+      currentTaskText ??
+      extractManagerSectionContent(lastAssistantMessage, "Today's Priority") ??
+      extractManagerSectionContent(lastAssistantMessage, "Next Step");
+
+    if (followUpTaskText) {
+      return {
+        reply: buildTaskClarificationReply({
+          taskText: followUpTaskText,
+          userMessage: latestUserMessage,
+          useEnglish,
+        }),
+        messageType: "conversation",
+        provider: "advisor",
+        sharedContext: context.sharedContext,
+        businessProfile: context.resolvedBusinessProfile,
+      };
+    }
+  }
+
   if (stableFieldAnswer) {
     return {
       reply: stableFieldAnswer,
@@ -1893,7 +2417,7 @@ export async function routeAiMessage({
     };
   }
 
-  if (profileState !== "ready" && missingImportantFields.length > 0) {
+  if (allowOnboardingFlow && profileState !== "ready" && missingImportantFields.length > 0) {
     const onboardingLanguageIsEnglish = shouldReplyInEnglish(
       latestUserMessage,
       context.sharedContext.conversationLanguage,
@@ -1920,6 +2444,18 @@ export async function routeAiMessage({
     }
 
     if (directTodayFocusIntent) {
+      return {
+        reply: normalizeManagerReply(buildAssumptionLeadManagerReply(context)),
+        messageType: "business_strategy",
+        provider: "advisor",
+        sharedContext: context.sharedContext,
+        businessProfile: context.resolvedBusinessProfile,
+      };
+    }
+
+    // If user is clearly reporting a business problem, prioritize direct execution guidance
+    // over onboarding/generic momentum templates.
+    if (businessProblemIntent || shouldForceAssumptionDecision(latestUserMessage)) {
       return {
         reply: normalizeManagerReply(buildAssumptionLeadManagerReply(context)),
         messageType: "business_strategy",
@@ -2017,7 +2553,7 @@ export async function routeAiMessage({
     }
   }
 
-  if (mode === "chat" && !businessProblemIntent) {
+  if (routeMode === "chat") {
     const reply = await runChatProvider({
       messages,
       contextSummary: providerContextSummary,

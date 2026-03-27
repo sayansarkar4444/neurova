@@ -61,6 +61,80 @@ type VisionSummaryResult = {
   note: string | null;
 };
 
+function normalizeForRepeatGuard(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, "");
+}
+
+function buildNonRepeatingFallback(
+  latestUserMessage: string,
+  repeatedReply: string
+): string {
+  const normalizedQuestion = latestUserMessage.trim().toLowerCase();
+  const compactPrevious = repeatedReply.trim();
+
+  const asksAllApps =
+    /\b(sab|saare|all)\b/i.test(normalizedQuestion) &&
+    /\b(app|apps|channel|channels)\b/i.test(normalizedQuestion);
+  if (asksAllApps) {
+    return [
+      "Nahi, saare apps/channels use karna zaroori nahi hota.",
+      "Ek primary channel choose karo jo aapke current goal ke closest ho.",
+      "Goal bataoge to main exact channel + execution sequence de dunga.",
+    ].join("\n");
+  }
+
+  const asksHowTo =
+    /\b(kaise|how to|how do i|how should i|step by step)\b/i.test(normalizedQuestion);
+  if (asksHowTo) {
+    return [
+      "Isko practical tareeke se karo, generic nahi:",
+      "Step 1: Desired outcome one line me define karo.",
+      "Step 2: Required inputs/tools list karo aur missing items close karo.",
+      "Step 3: Execution karo, phir result metric note karke next step finalize karo.",
+      "Agar chaaho to main isi topic ka click-by-click version abhi de sakta hoon.",
+    ].join("\n");
+  }
+
+  return [
+    "Same line repeat nahi kar raha. Aapke current question ka direct answer dete hain.",
+    "Agle step me ek hi focused action complete karo aur uska result share karo.",
+    `Last context considered: ${compactPrevious.slice(0, 120)}${compactPrevious.length > 120 ? "..." : ""}`,
+  ].join("\n");
+}
+
+function enforceNoRepeatReply(
+  reply: string,
+  messages: ChatMessage[]
+): string {
+  const lastAssistantMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant")?.content;
+  const latestUserMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user")?.content;
+
+  if (!lastAssistantMessage || !latestUserMessage) {
+    return reply;
+  }
+
+  const normalizedReply = normalizeForRepeatGuard(reply);
+  const normalizedLastAssistant = normalizeForRepeatGuard(lastAssistantMessage);
+  if (!normalizedReply || normalizedReply !== normalizedLastAssistant) {
+    return reply;
+  }
+
+  const fallback = buildNonRepeatingFallback(latestUserMessage, lastAssistantMessage);
+  if (normalizeForRepeatGuard(fallback) === normalizedLastAssistant) {
+    return `${fallback}\nFocus only on one channel today.`;
+  }
+
+  return fallback;
+}
+
 function sanitizeAttachments(files: File[]): ChatAttachment[] {
   return files
     .slice(0, MAX_ATTACHMENTS)
@@ -771,8 +845,10 @@ export async function POST(request: Request) {
     console.log("[PROFILE SAVE] success/failure = success");
     console.log("[PROFILE CONTEXT] refreshed profile =", safeBusinessProfile);
 
+    const finalReply = enforceNoRepeatReply(result.reply, effectiveMessages);
+
     return NextResponse.json({
-      reply: result.reply,
+      reply: finalReply,
       sharedContext: result.sharedContext,
       businessProfile: safeBusinessProfile,
       suggestedProfileUpdates: pendingSuggestedUpdates,

@@ -942,11 +942,13 @@ export default function Home() {
         const storedProfile = localStorage.getItem(profileKey);
         const storedMemory = localStorage.getItem(memoryKey);
         const storedSuggestions = localStorage.getItem(suggestionsKey);
+        let localProfileSnapshot: BusinessProfile | null = null;
 
         if (storedProfile) {
-          setBusinessProfile(
-            normalizeBusinessProfile(JSON.parse(storedProfile) as Partial<BusinessProfile>)
+          localProfileSnapshot = normalizeBusinessProfile(
+            JSON.parse(storedProfile) as Partial<BusinessProfile>
           );
+          setBusinessProfile(localProfileSnapshot);
         }
 
         if (storedMemory) {
@@ -978,7 +980,17 @@ export default function Home() {
           profile?: Partial<BusinessProfile>;
         };
         if (data.profile) {
-          setBusinessProfile(normalizeBusinessProfile(data.profile));
+          const dbProfile = normalizeBusinessProfile(data.profile);
+          const dbProfileState = getBusinessProfileState(dbProfile);
+          const localProfileState = localProfileSnapshot
+            ? getBusinessProfileState(localProfileSnapshot)
+            : "empty";
+          const shouldApplyDbProfile =
+            dbProfileState !== "empty" || localProfileState === "empty";
+
+          if (shouldApplyDbProfile) {
+            setBusinessProfile(dbProfile);
+          }
         }
       } catch {
         // Ignore invalid profile storage.

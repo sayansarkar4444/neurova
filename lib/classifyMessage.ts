@@ -253,6 +253,38 @@ const FOLLOW_UP_PHRASES = [
   "aur",
 ];
 
+const HELPER_MODE_KEYWORDS = [
+  "automation",
+  "automate",
+  "n8n",
+  "workflow",
+  "api setup",
+  "kaise",
+  "kaise kare",
+  "kaise karu",
+  "kaise karun",
+  "step by step",
+  "step",
+  "steps",
+  "how",
+  "how to",
+  "how do i",
+  "banau",
+  "banaun",
+  "banao",
+  "banaye",
+  "banayein",
+];
+
+const HELPER_MODE_EXCLUSIONS = [
+  "how are you",
+  "kaise ho",
+  "aap kaise ho",
+  "tum kaise ho",
+  "who are you",
+  "what are you",
+];
+
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -288,6 +320,31 @@ function looksLikeMathQuestion(message: string): boolean {
 
 function isCasualConversation(message: string): boolean {
   return includesAnyKeyword(message, CASUAL_CONVERSATION_KEYWORDS);
+}
+
+export function isHelperModeIntent(message: string): boolean {
+  const normalizedMessage = normalizeMessage(message);
+  if (!normalizedMessage) return false;
+
+  if (HELPER_MODE_EXCLUSIONS.some((phrase) => includesKeyword(normalizedMessage, phrase))) {
+    return false;
+  }
+
+  if (isGreetingMessage(normalizedMessage)) {
+    return false;
+  }
+
+  const hasHelperSignal = HELPER_MODE_KEYWORDS.some((keyword) =>
+    includesKeyword(normalizedMessage, keyword)
+  );
+  if (!hasHelperSignal) return false;
+
+  // Avoid one-word ambiguous turns like just "how".
+  if (normalizedMessage.split(" ").length <= 1) {
+    return false;
+  }
+
+  return true;
 }
 
 export function isBusinessProblemIntent(message: string): boolean {

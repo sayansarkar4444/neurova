@@ -14,15 +14,7 @@ type ProfileDbPayload = {
   profiles: Record<string, BusinessProfile>;
 };
 
-function isVercelRuntime(): boolean {
-  return Boolean(process.env.VERCEL);
-}
-
 async function readDbPayload(): Promise<ProfileDbPayload> {
-  if (isVercelRuntime()) {
-    return { profiles: {} };
-  }
-
   try {
     const raw = await readFile(PROFILE_DB_PATH, "utf8");
     const parsed = JSON.parse(raw) as unknown;
@@ -72,10 +64,6 @@ export async function writeBusinessProfileToDb(
   userId: string,
   profile: BusinessProfile
 ): Promise<void> {
-  if (isVercelRuntime()) {
-    return;
-  }
-
   const payload = await readDbPayload();
   payload.profiles[userId] = normalizeBusinessProfile(profile);
 

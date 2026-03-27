@@ -19,11 +19,43 @@ type ChatProviderParams = {
   contextSummary: string;
 };
 
+type HelperProviderParams = {
+  messages: ChatMessage[];
+  contextSummary: string;
+  helperState?: {
+    currentStep: number;
+    explainedStep: number;
+    completedStep: number;
+    waitingForUserConfirmation: boolean;
+    explainedStepText?: string | null;
+    latestUserAskedNextWithoutConfirmation?: boolean;
+  };
+};
+
+type GeminiMessage = {
+  role: "user" | "model";
+  parts: Array<{ text: string }>;
+};
+
 const MAX_RECENT_MESSAGES = 24;
 const MIN_RECENT_MESSAGES = 16;
 const GROQ_PAYLOAD_CHAR_BUDGET = 22000;
 const MAX_CONTEXT_SUMMARY_CHARS = 1400;
 const MAX_ASSISTANT_MESSAGE_CHARS = 360;
+const GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash"];
+const GEMINI_NATIVE_STYLE_PROMPT = `
+You are Neurova.
+Reply naturally like a high-quality conversational assistant, while staying practical.
+Do not sound like a rigid template engine.
+Rules:
+- First understand the exact user question, then answer that exact question directly.
+- Do not repeat boilerplate lines.
+- Do not force fixed headings unless user explicitly asks for structured format.
+- Keep replies human, clear, and context-aware.
+- For business queries, give concrete actions, but keep tone natural.
+- If user language is Hinglish, reply in simple Hinglish.
+- If user asks a short question, give a short direct answer first.
+`;
 
 function sanitizeIdentityWording(reply: string): string {
   return reply
@@ -349,6 +381,127 @@ Rules:
 - If the user says sab theek hai, koi problem nahi, no issue, or everything is fine, respond casually and invite further conversation without switching to structured manager mode.
 `.trim();
 
+const HELPER_MODE_SYSTEM_PROMPT = `
+You are Neurova in Helper Mode.
+In this mode, do practical implementation help only.
+Language policy:
+- Mirror the user's latest message language (English or Hinglish).
+- Keep wording simple and direct.
+Rules:
+- Do not use manager template headings like Situation, Manager Insight, Decision, Priority, Steps, Watch.
+- Do not use Short Answer / Why format.
+- Helper Mode = Execution Mode. Give deep, practical, step-by-step execution.
+- Prefer click-by-click style instructions.
+- Include exact sequence, exact text/examples, and what to check after each step.
+- Avoid generic tips and avoid broad theory.
+- After user confirmation (done/ho gaya/completed), do NOT give theory or concept explanation.
+- After user confirmation, always give the next exact executable step.
+- Never ask user to decide/choose/think what to do next.
+- Forbidden language: "decide karo", "choose karo", "aapko sochna hoga", "you decide", "you can choose".
+- If context is incomplete, make one reasonable assumption and continue with executable steps.
+- Track execution state strictly using the provided state block:
+  current_step, explained_step, completed_step, waiting_for_user_confirmation.
+- Never claim any step is completed unless user explicitly confirmed with done/ho gaya/completed.
+- Forbidden claims when not confirmed: "we have set up", "already configured", "already done", "ho gaya hai".
+- Explain exactly one step per reply.
+- After explaining one step, ask user to execute it and confirm done.
+- If user says "next" without done confirmation, continue explanation for the same step only.
+- Do not reveal internal state to the user (never print current_step/explained_step/completed_step).
+- Use ONLY this output structure for tutorial steps:
+  Step X: [clear action title]
+  👉 What to do:
+  [click-by-click instructions]
+  👉 What you should see:
+  [expected result]
+  👉 If stuck:
+  [common issue + fix]
+  Ho jaye to 'done' likho
+- Step title must be a concrete action command, not a user-description sentence.
+- Do not repeat the user's original sentence as step title.
+- For n8n automation setup, the first step must be:
+  Step 1: n8n account create karo
+  and include:
+  - go to https://n8n.io
+  - sign up
+  - open dashboard
+- If user goal is email confirmation automation, follow this strict sequence:
+  Step 1: n8n account create karo
+  Step 2: New workflow create karo
+  Step 3: Webhook trigger add karo
+  Step 4: Email node add karo
+  Step 5: Webhook aur Email node connect karo
+`.trim();
+
+type HelperFallbackStepTemplate = {
+  title: string;
+  whatToDo: string[];
+  whatYouShouldSee: string;
+  ifStuck: string;
+};
+
+const EMAIL_CONFIRMATION_STEP_TEMPLATES: Record<number, HelperFallbackStepTemplate> = {
+  1: {
+    title: "n8n account create karo",
+    whatToDo: [
+      "1. Browser me https://n8n.io open karo.",
+      "2. Sign up button par click karke account create karo.",
+      "3. Login ke baad dashboard open karo.",
+    ],
+    whatYouShouldSee:
+      "n8n dashboard open ho jana chahiye jahan aap workflows bana sakte ho.",
+    ifStuck: "Agar verification mail na mile to spam folder check karo aur link dobara open karo.",
+  },
+  2: {
+    title: "New workflow create karo",
+    whatToDo: [
+      "1. Dashboard me 'New Workflow' button par click karo.",
+      "2. Workflow name field me 'Email Confirmation Automation' likho.",
+      "3. Top bar me Save click karo.",
+    ],
+    whatYouShouldSee: "Canvas par empty workflow editor open ho jayega with saved workflow name.",
+    ifStuck: "Agar New Workflow button na dikhe to left sidebar me Workflows > Create Workflow open karo.",
+  },
+  3: {
+    title: "Webhook trigger add karo",
+    whatToDo: [
+      "1. Canvas me '+' button click karo.",
+      "2. Search bar me 'Webhook' likho.",
+      "3. 'Webhook' node select karo.",
+      "4. HTTP Method field me 'POST' select karo.",
+      "5. Test URL copy karo.",
+    ],
+    whatYouShouldSee: "Webhook node canvas me add ho jayega aur test URL visible hoga.",
+    ifStuck: "Agar Webhook option na mile to node search bar me exact keyword 'Webhook' use karo.",
+  },
+  4: {
+    title: "Email node add karo",
+    whatToDo: [
+      "1. Webhook node ke right side '+' icon click karo.",
+      "2. Search bar me 'Email Send' likho aur node select karo.",
+      "3. Credentials section me SMTP ya email credential connect karo.",
+      "4. To field me `{{$json.body.email}}` set karo.",
+      "5. Subject field me 'Email Confirmation' likho.",
+      "6. Text field me `Hi {{$json.body.name}}, your email is confirmed.` likho.",
+    ],
+    whatYouShouldSee: "Email node add ho jayega aur required fields filled dikhenge.",
+    ifStuck:
+      "Agar 'Email Send' node na mile to 'Email' search karo aur sending action wala email node select karo.",
+  },
+  5: {
+    title: "Webhook aur Email node connect karo",
+    whatToDo: [
+      "1. Webhook node ke output dot par click-hold karo.",
+      "2. Line drag karke Email node ke input dot par drop karo.",
+      "3. Connection banne ke baad Save click karo.",
+      "4. 'Execute Workflow' click karke webhook test payload bhejo.",
+    ],
+    whatYouShouldSee:
+      "Webhook se Email node tak connection line visible hogi aur test run me execution success dikhna chahiye.",
+    ifStuck:
+      "Agar line connect na ho to zoom reset karo aur output/input dots par exact drop karo, phir dubara test run karo.",
+  },
+};
+
 function truncate(value: string, maxChars: number): string {
   if (value.length <= maxChars) {
     return value;
@@ -499,6 +652,142 @@ function buildSystemPrompt({
   ].join("\n\n");
 }
 
+function toGeminiMessages(messages: ChatMessage[]): GeminiMessage[] {
+  const mapped = messages.map((message) => ({
+    role: (message.role === "assistant" ? "model" : "user") as "user" | "model",
+    parts: [{ text: message.content }],
+  }));
+
+  // Gemini chat history should not begin with model-only turns.
+  while (mapped.length > 0 && mapped[0].role === "model") {
+    mapped.shift();
+  }
+
+  return mapped;
+}
+
+async function callGeminiEndpoint({
+  apiKey,
+  model,
+  body,
+}: {
+  apiKey: string;
+  model: string;
+  body: Record<string, unknown>;
+}): Promise<string | null> {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini ${model} failed (${response.status}): ${errorText}`);
+  }
+
+  const data = (await response.json()) as {
+    candidates?: Array<{
+      content?: {
+        parts?: Array<{ text?: string }>;
+      };
+    }>;
+  };
+
+  const text =
+    data.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text?.trim() ?? "")
+      .filter(Boolean)
+      .join("\n")
+      .trim() ?? "";
+
+  return text || null;
+}
+
+async function runGeminiTextGeneration({
+  systemContent,
+  messages,
+  temperature,
+}: {
+  systemContent: string;
+  messages: ChatMessage[];
+  temperature: number;
+}): Promise<string | null> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey) return null;
+
+  const geminiMessages = toGeminiMessages(messages);
+
+  for (const model of GEMINI_MODELS) {
+    const payloadVariants: Array<Record<string, unknown>> = [
+      // Preferred REST shape (snake_case).
+      {
+        system_instruction: {
+          parts: [{ text: systemContent }],
+        },
+        contents: geminiMessages,
+        generationConfig: {
+          temperature,
+          topP: 0.9,
+        },
+      },
+      // Compatibility variant for endpoints that accept camelCase.
+      {
+        systemInstruction: {
+          parts: [{ text: systemContent }],
+        },
+        contents: geminiMessages,
+        generationConfig: {
+          temperature,
+          topP: 0.9,
+        },
+      },
+      // Last fallback: inline system prompt in first user turn.
+      {
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: `${systemContent}\n\nUser conversation starts now.` }],
+          },
+          ...geminiMessages,
+        ],
+        generationConfig: {
+          temperature,
+          topP: 0.9,
+        },
+      },
+    ];
+
+    try {
+      for (const payload of payloadVariants) {
+        const text = await callGeminiEndpoint({
+          apiKey,
+          model,
+          body: payload,
+        });
+        if (text) {
+          console.log("[provider] Gemini response selected.", { model });
+          return text;
+        }
+      }
+    } catch (error) {
+      console.warn("[provider] Gemini request failed, trying fallback model/provider.", {
+        model,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return null;
+}
+
+function buildGeminiSystemContent(baseSystemContent: string): string {
+  return `${GEMINI_NATIVE_STYLE_PROMPT.trim()}\n\n${baseSystemContent}`;
+}
+
 export async function runAdvisorProvider({
   messages,
   messageType,
@@ -507,10 +796,6 @@ export async function runAdvisorProvider({
 }: AdvisorProviderParams): Promise<string> {
   const apiKey = process.env.GROQ_API_KEY;
 
-  if (!apiKey) {
-    return "Neurova ka advisor provider configured hai, lekin GROQ_API_KEY abhi set nahi hai.";
-  }
-
   const compactSummary = compactContextSummary(contextSummary);
   const systemContent = buildSystemPrompt({
     messageType,
@@ -518,7 +803,23 @@ export async function runAdvisorProvider({
     isFollowUp,
   });
   const historyMessages = buildGuardedMessageHistory(messages, systemContent);
+  const latestUserMessage = messages[messages.length - 1]?.content ?? "";
+
+  const geminiReply = await runGeminiTextGeneration({
+    systemContent: buildGeminiSystemContent(systemContent),
+    messages: historyMessages,
+    temperature: isFollowUp ? 0.2 : 0.35,
+  });
+  if (geminiReply) {
+    return applyTemplateQualityGuard(geminiReply, latestUserMessage);
+  }
+
+  if (!apiKey) {
+    return "Neurova ka advisor provider configured hai, lekin GEMINI_API_KEY ya GROQ_API_KEY abhi set nahi hai.";
+  }
+
   const groq = new Groq({ apiKey });
+  console.log("[provider] Using Groq fallback for advisor response.");
   const completion = await groq.chat.completions.create({
     model: "llama-3.1-8b-instant",
     temperature: isFollowUp ? 0.2 : 0.35,
@@ -531,7 +832,6 @@ export async function runAdvisorProvider({
     ],
   });
 
-  const latestUserMessage = messages[messages.length - 1]?.content ?? "";
   const rawReply =
     completion.choices[0]?.message?.content?.trim() ||
     "Neurova ko provider se empty response mila.";
@@ -582,6 +882,218 @@ function buildChatModeFallback(latestMessage: string): string {
   return "Samjha. Aap jo discuss karna chahte ho woh batao.";
 }
 
+function inferHelperActionTitle(latestMessage: string): string {
+  const normalized = latestMessage.trim().toLowerCase();
+  if (!normalized) return "Required setup action execute karo";
+
+  if (/\bn8n\b|\bautomation\b/.test(normalized)) {
+    return "n8n account create karo";
+  }
+
+  if (/\bwebhook\b/.test(normalized)) {
+    return "Webhook trigger create karo";
+  }
+
+  if (/\bapi\b|\bintegration\b/.test(normalized)) {
+    return "API connection setup karo";
+  }
+
+  return "Required setup action execute karo";
+}
+
+function buildHelperModeFallback(
+  latestMessage: string,
+  helperState?: HelperProviderParams["helperState"]
+): string {
+  const step = Math.max(1, helperState?.currentStep ?? 1);
+  const title = inferHelperActionTitle(latestMessage);
+  const isN8nSetup = /\bn8n\b|\bautomation\b/i.test(latestMessage) && step === 1;
+  if (isN8nSetup) {
+    return [
+      "Step 1: n8n account create karo",
+      "",
+      "👉 What to do:",
+      "1. Browser me https://n8n.io open karo.",
+      "2. Sign up button par click karke account create karo.",
+      "3. Login ke baad dashboard screen open karo.",
+      "",
+      "👉 What you should see:",
+      "n8n dashboard open ho jana chahiye jahan workflows create kar sakte ho.",
+      "",
+      "👉 If stuck:",
+      "Agar signup email verify na ho, spam folder check karo aur verification link dobara open karo.",
+      "",
+      "Ho jaye to 'done' likho",
+    ].join("\n");
+  }
+
+  return [
+    `Step ${step}: ${title}`,
+    "",
+    "👉 What to do:",
+    "1. Required fields/input values fill karo.",
+    "2. Save/Test button click karo.",
+    "3. Output panel/response me result verify karo.",
+    "",
+    "👉 What you should see:",
+    "Success response, webhook hit, ya test payload visible hona chahiye.",
+    "",
+    "👉 If stuck:",
+    "Agar test fail ho, URL/auth fields dobara check karo aur ek fresh test event bhejo.",
+    "",
+    "Ho jaye to 'done' likho",
+  ].join("\n");
+}
+
+function hasUnconfirmedCompletionClaim(reply: string): boolean {
+  const text = reply.toLowerCase();
+  const claimPatterns = [
+    /\bwe(?:'ve| have)\s+(set up|configured|created|connected|completed)\b/,
+    /\balready\s+(set up|configured|created|connected|done|completed)\b/,
+    /\b(webhook|node|workflow|trigger|api)\s+(is|was|has been)\s+(already\s+)?(set up|configured|connected|done|completed)\b/,
+    /\b(ho gaya hai|ho chuka hai|already done)\b/,
+  ];
+
+  return claimPatterns.some((pattern) => pattern.test(text));
+}
+
+function keepSingleStep(reply: string): string {
+  const lines = reply.split(/\r?\n/);
+  const stepLineIndexes = lines
+    .map((line, index) => ({ line: line.trim(), index }))
+    .filter(
+      ({ line }) => /^(?:step\s*)?\d{1,2}\s*[:.)-]\s+/i.test(line)
+    )
+    .map(({ index }) => index);
+
+  if (stepLineIndexes.length <= 1) {
+    return reply;
+  }
+
+  const firstStepIndex = stepLineIndexes[0];
+  const secondStepIndex = stepLineIndexes[1];
+  const kept = lines.slice(0, secondStepIndex);
+  if (firstStepIndex >= 0) {
+    kept.push("Ho jaye to 'done' likho");
+  }
+
+  return kept.join("\n").trim();
+}
+
+function hidesInternalState(reply: string): string {
+  return reply
+    .split(/\r?\n/)
+    .filter(
+      (line) =>
+        !/\b(current_step|explained_step|completed_step|waiting_for_user_confirmation|current step|completed step|explained step)\b/i.test(
+          line.trim()
+        )
+    )
+    .join("\n")
+    .trim();
+}
+
+function hasHelperRequiredFormat(reply: string): boolean {
+  const text = reply.toLowerCase();
+  return (
+    /step\s+\d+\s*:/i.test(reply) &&
+    text.includes("👉 what to do:".toLowerCase()) &&
+    text.includes("👉 what you should see:".toLowerCase()) &&
+    text.includes("👉 if stuck:".toLowerCase()) &&
+    text.includes("ho jaye to 'done' likho")
+  );
+}
+
+function hasForbiddenHelperSections(reply: string): boolean {
+  const text = reply.toLowerCase();
+  return (
+    text.includes("short answer") ||
+    text.includes("why:") ||
+    text.includes("next step") ||
+    text.includes("next-step")
+  );
+}
+
+function hasNonActionStepTitle(reply: string): boolean {
+  const firstStepLine = reply
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /^step\s+\d+\s*:/i.test(line));
+  if (!firstStepLine) return true;
+
+  const title = firstStepLine.replace(/^step\s+\d+\s*:\s*/i, "").trim().toLowerCase();
+  if (!title) return true;
+
+  // Avoid reflective/problem-description titles.
+  if (
+    /\b(mujhe|mera|my|i need|i want|problem|issue|karna hai|banana hai|banani hai)\b/i.test(
+      title
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function normalizeHelperReply(
+  reply: string,
+  latestMessage: string,
+  helperState?: HelperProviderParams["helperState"]
+): string {
+  const cleaned = sanitizeIdentityWording(reply).trim();
+  if (!cleaned) return buildHelperModeFallback(latestMessage, helperState);
+
+  const withoutHeadings = cleaned
+    .split(/\r?\n/)
+    .filter(
+      (line) =>
+        !/^\s*(Situation|Manager Insight|Decision|Today's Priority|Action Steps|Watch|Short Answer|Why|Next Step)\s*[:\-]?\s*$/i.test(
+          line.trim()
+        )
+    )
+    .join("\n")
+    .trim();
+
+  const noInternalState = hidesInternalState(withoutHeadings);
+  const singleStepReply = keepSingleStep(noInternalState);
+  const requiresStrictNoCompletionClaim = Boolean(
+    helperState?.waitingForUserConfirmation &&
+      (helperState?.completedStep ?? 0) < (helperState?.explainedStep ?? 0)
+  );
+
+  if (requiresStrictNoCompletionClaim && hasUnconfirmedCompletionClaim(singleStepReply)) {
+    const pendingStep = Math.max(1, helperState?.explainedStep ?? helperState?.currentStep ?? 1);
+    const pendingText = helperState?.explainedStepText?.trim();
+    return [
+      "Main assume nahi kar raha ki step complete ho gaya hai.",
+      pendingText
+        ? `Current pending step (Step ${pendingStep}): ${pendingText}`
+        : `Current pending step: Step ${pendingStep}.`,
+      "Isko execute karke 'done' ya 'ho gaya' likho, phir main next step dunga.",
+    ].join("\n");
+  }
+
+  const mustUseN8nFirstStep =
+    /\bn8n\b|\bautomation\b/i.test(latestMessage) &&
+    Math.max(1, helperState?.currentStep ?? 1) === 1;
+  const hasRequiredN8nFirstStep = /step\s*1\s*:\s*n8n account create karo/i.test(
+    singleStepReply
+  );
+
+  if (
+    !singleStepReply ||
+    hasForbiddenHelperSections(singleStepReply) ||
+    !hasHelperRequiredFormat(singleStepReply) ||
+    hasNonActionStepTitle(singleStepReply) ||
+    (mustUseN8nFirstStep && !hasRequiredN8nFirstStep)
+  ) {
+    return buildHelperModeFallback(latestMessage, helperState);
+  }
+
+  return singleStepReply;
+}
+
 export async function runChatProvider({
   messages,
   contextSummary,
@@ -589,14 +1101,24 @@ export async function runChatProvider({
   const apiKey = process.env.GROQ_API_KEY;
   const latestMessage = messages[messages.length - 1]?.content ?? "";
 
+  const compactSummary = compactContextSummary(contextSummary);
+  const systemContent = `${CHAT_MODE_SYSTEM_PROMPT}\n\nStructured business context:\n${compactSummary}`;
+  const historyMessages = buildGuardedMessageHistory(messages, systemContent);
+  const geminiReply = await runGeminiTextGeneration({
+    systemContent: buildGeminiSystemContent(systemContent),
+    messages: historyMessages,
+    temperature: 0.45,
+  });
+  if (geminiReply) {
+    return applyTemplateQualityGuard(geminiReply, latestMessage);
+  }
+
   if (!apiKey) {
     return buildChatModeFallback(latestMessage);
   }
 
-  const compactSummary = compactContextSummary(contextSummary);
-  const systemContent = `${CHAT_MODE_SYSTEM_PROMPT}\n\nStructured business context:\n${compactSummary}`;
-  const historyMessages = buildGuardedMessageHistory(messages, systemContent);
   const groq = new Groq({ apiKey });
+  console.log("[provider] Using Groq fallback for chat response.");
   const completion = await groq.chat.completions.create({
     model: "llama-3.1-8b-instant",
     temperature: 0.45,
@@ -612,4 +1134,61 @@ export async function runChatProvider({
   const rawReply =
     completion.choices[0]?.message?.content?.trim() || buildChatModeFallback(latestMessage);
   return applyTemplateQualityGuard(rawReply, latestMessage);
+}
+
+export async function runHelperProvider({
+  messages,
+  contextSummary,
+  helperState,
+}: HelperProviderParams): Promise<string> {
+  const apiKey = process.env.GROQ_API_KEY;
+  const latestMessage = messages[messages.length - 1]?.content ?? "";
+
+  const compactSummary = compactContextSummary(contextSummary);
+  const helperStateBlock = [
+    "Helper execution state:",
+    `current_step: ${Math.max(1, helperState?.currentStep ?? 1)}`,
+    `explained_step: ${Math.max(0, helperState?.explainedStep ?? 0)}`,
+    `completed_step: ${Math.max(0, helperState?.completedStep ?? 0)}`,
+    `waiting_for_user_confirmation: ${
+      helperState?.waitingForUserConfirmation ? "true" : "false"
+    }`,
+    `latest_user_asked_next_without_confirmation: ${
+      helperState?.latestUserAskedNextWithoutConfirmation ? "true" : "false"
+    }`,
+    `explained_step_text: ${helperState?.explainedStepText?.trim() || "not_available"}`,
+  ].join("\n");
+  const systemContent = `${HELPER_MODE_SYSTEM_PROMPT}\n\n${helperStateBlock}\n\nStructured business context:\n${compactSummary}`;
+  const historyMessages = buildGuardedMessageHistory(messages, systemContent);
+  const geminiReply = await runGeminiTextGeneration({
+    systemContent: buildGeminiSystemContent(systemContent),
+    messages: historyMessages,
+    temperature: 0.25,
+  });
+  if (geminiReply) {
+    return normalizeHelperReply(geminiReply, latestMessage, helperState);
+  }
+
+  if (!apiKey) {
+    return buildHelperModeFallback(latestMessage, helperState);
+  }
+
+  const groq = new Groq({ apiKey });
+  console.log("[provider] Using Groq fallback for helper response.");
+  const completion = await groq.chat.completions.create({
+    model: "llama-3.1-8b-instant",
+    temperature: 0.25,
+    messages: [
+      {
+        role: "system",
+        content: systemContent,
+      },
+      ...historyMessages,
+    ],
+  });
+
+  const rawReply =
+    completion.choices[0]?.message?.content?.trim() ||
+    buildHelperModeFallback(latestMessage, helperState);
+  return normalizeHelperReply(rawReply, latestMessage, helperState);
 }

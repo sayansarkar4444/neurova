@@ -12,6 +12,7 @@ import {
   isBusinessProblemIntent,
   isGreetingMessage,
   isHelperModeIntent,
+  isThinkingModeIntent,
   isFollowUpMessage,
   isVagueBusinessMessage,
   type MessageType,
@@ -31,7 +32,14 @@ import {
   type BusinessProfileField,
 } from "./businessProfile";
 import { normalizeManagerReply } from "./managerResponse";
-import { runAdvisorProvider, runChatProvider, runHelperProvider } from "./providers/groq";
+import {
+  runAdvisorProvider,
+  runChatProvider,
+  runDecisionProvider,
+  runDirectProvider,
+  runHelperProvider,
+  runThinkingProvider,
+} from "./providers/groq";
 import { runDeepseekReasoning } from "./providers/deepseekReasoning";
 import { contentProvider } from "./providers/placeholderContent";
 import {
@@ -56,9 +64,18 @@ type RouteAiMessageParams = {
   userSettings?: UserSettings;
 };
 
-type ProviderName = "chat" | "advisor" | "deepseek-reasoning" | "content" | "helper";
+type ProviderName =
+  | "chat"
+  | "advisor"
+  | "deepseek-reasoning"
+  | "content"
+  | "helper"
+  | "thinking"
+  | "decision"
+  | "direct";
 
-type RouteMode = "chat" | "manager" | "helper";
+type RouteMode = "chat" | "manager" | "helper" | "thinking" | "decision" | "direct";
+type AnswerType = "decision" | "risk" | "execution" | "strategy" | "other";
 
 type HelperExecutionState = {
   currentStep: number;
@@ -479,6 +496,49 @@ function hasMinimumDecisionContext(context: ConversationContext): boolean {
   return hasBusinessType && hasMainGoal;
 }
 
+function detectAnswerType(latestUserMessage: string): AnswerType {
+  const normalized = normalizeText(latestUserMessage);
+  if (!normalized) return "other";
+
+  const includesAnyPhrase = (phrases: string[]) =>
+    phrases.some((phrase) => normalized.includes(phrase));
+
+  if (includesAnyPhrase(["line likho", "example do", "message do", "kaise karun", "kaise karu"])) {
+    return "execution";
+  }
+
+  if (includesAnyPhrase(["kaunsa best hai", "choose karo"])) {
+    return "decision";
+  }
+
+  if (
+    /nuks[a-z]*\s+(ho\s*ga|hoga|ho\s*gya|hoga\s*kiya|hoga\s*kya)/i.test(normalized) ||
+    /sahi\s+hai(\s+ya\s+(nahi|nhi))?/i.test(normalized) ||
+    /kya\s+sahi\s+hai/i.test(normalized) ||
+    /risk\s+kya\s+hai/i.test(normalized) ||
+    /profit\s+hoga\s+ya\s+nahi/i.test(normalized)
+  ) {
+    return "risk";
+  }
+
+  if (includesAnyPhrase(["kya karun", "kya karu", "sales drop ho raha", "sales drop ho rha"])) {
+    return "strategy";
+  }
+
+  return "other";
+}
+
+function isForceDirectAnswerQuestion(latestUserMessage: string): boolean {
+  const normalized = normalizeText(latestUserMessage);
+  if (!normalized) return false;
+  return (
+    /kaunsa\s+best\s+hai/i.test(normalized) ||
+    /nuks[a-z]*\s+(ho\s*ga|hoga|ho\s*gya|hoga\s*kiya|hoga\s*kya)/i.test(normalized) ||
+    /kya\s+sahi\s+hai/i.test(normalized) ||
+    /sahi\s+hai(\s+ya\s+(nahi|nhi))?/i.test(normalized)
+  );
+}
+
 function detectRouteMode({
   latestUserMessage,
   selectedMode,
@@ -490,17 +550,33 @@ function detectRouteMode({
   businessProblemIntent: boolean;
   messageType: MessageType;
 }): RouteMode {
+  // Master priority override:
+  // direct/logical/comparison questions must use plain direct mode first.
+  if (isForceDirectAnswerQuestion(latestUserMessage)) {
+    return "direct";
+  }
+
+  const answerType = detectAnswerType(latestUserMessage);
+  if (answerType === "execution") return "helper";
+  if (answerType === "decision") return "decision";
+  if (answerType === "risk") return "thinking";
+  if (answerType === "strategy") return "manager";
+
+  if (isThinkingModeIntent(latestUserMessage)) {
+    return "thinking";
+  }
+
   if (isHelperModeIntent(latestUserMessage)) {
     return "helper";
   }
 
   if (
-    selectedMode === "manager" ||
-    businessProblemIntent ||
     messageType === "business_strategy" ||
     messageType === "seasonal_strategy" ||
     messageType === "calculation" ||
-    messageType === "marketing_content"
+    messageType === "marketing_content" ||
+    businessProblemIntent ||
+    selectedMode === "manager"
   ) {
     return "manager";
   }
@@ -1032,14 +1108,14 @@ function buildMeaningFollowUpReply({
   const decision =
     extractManagerSectionContent(lastAssistantMessage, "Decision") ??
     (useEnglish
-      ? "We should pause onboarding and execute one concrete action first."
-      : "Onboarding ko pause karke ek concrete action pe kaam start karna hai.");
+      ? "Pause extra planning and start one practical customer-facing move today."
+      : "Extra planning abhi pause karo aur aaj ek practical customer-facing move start karo.");
   const priority =
     extractManagerSectionContent(lastAssistantMessage, "Today's Priority") ??
     getCurrentTaskText(sharedTaskState) ??
     (useEnglish
-      ? "Choose one high-impact channel and execute one focused action today."
-      : "Aaj ek high-impact channel choose karke ek focused action execute karo.");
+      ? "Call 10 recent customers with a comeback offer and track responses."
+      : "Aaj 10 recent customers ko comeback offer ke saath call/WhatsApp karo aur response track karo.");
 
   return useEnglish
     ? [
@@ -1182,9 +1258,9 @@ function buildTaskSpecificSimplificationSteps(
   }
 
   return [
-    "Step 1: Task ko 1 line me output format me likho.",
-    "Step 2: Us output ka sabse chhota on-ground action abhi complete karo.",
-    "Step 3: Result note karke same task ka next micro-step set karo.",
+    "Step 1: Aaj 10 purane customers ko naam se personal invite bhejo.",
+    "Step 2: Counter par repeat-visit offer line lagao (jaise next visit par small discount).",
+    "Step 3: Din ke end me replies/visits count karo aur kal ke liye same offer tune karo.",
   ];
 }
 
@@ -1629,6 +1705,12 @@ function hasAnsweredBusinessType(context: ConversationContext, conversationText:
   return Boolean(context.businessType || includesAny(conversationText, RESTAURANT_KEYWORDS));
 }
 
+function buildBusinessTypeClarificationQuestion(useEnglish: boolean): string {
+  return useEnglish
+    ? "What type of business do you run? (kirana, clothing, service, etc.)"
+    : "Aapka business type kya hai? (kirana, clothing, service, etc.)";
+}
+
 function hasAnsweredProblemType(context: ConversationContext): boolean {
   return Boolean(context.problemType);
 }
@@ -1827,6 +1909,13 @@ function buildClarificationReply({
   const askedIntents = getAskedClarificationIntents(messages);
   const candidates: Array<{ intent: ClarificationIntent; question: string }> = [];
 
+  if (!businessTypeKnown) {
+    const question = buildBusinessTypeClarificationQuestion(useEnglish);
+    if (!matchesPreviousQuestion(question, lastAssistantMessage)) {
+      return question;
+    }
+  }
+
   if (!problemTypeKnown) {
     if (normalized.includes("trust")) {
       candidates.push({
@@ -1850,13 +1939,6 @@ function buildClarificationReply({
           "Is issue ka sabse visible signal kya hai: customers kam aa rahe hain, orders kam hain, ya revenue drop hai?",
       });
     }
-  }
-
-  if (!businessTypeKnown) {
-    candidates.push({
-      intent: "business_type",
-      question: "Aap kis type ka business chala rahe ho?",
-    });
   }
 
   if (
@@ -2211,6 +2293,11 @@ export async function routeAiMessage({
     buildSettingsInstructionBlock(normalizedUserSettings),
   ].join("\n\n");
   const normalizedLatestUserMessage = normalizeText(latestUserMessage);
+  const useEnglishForLatestMessage = shouldReplyInEnglish(
+    latestUserMessage,
+    context.sharedContext.conversationLanguage,
+    context.resolvedContext.preferredLanguage || preferredLanguageFromSettings
+  );
   const lastAssistantMessage = getLastAssistantMessage(messages);
   const currentTaskText = getCurrentTaskText(sharedTaskState);
   const hasTaskContextInConversation = hasRecentTaskAssignment(messages);
@@ -2235,6 +2322,7 @@ export async function routeAiMessage({
     businessProblemIntent,
     messageType,
   });
+  console.log("MODE:", routeMode);
   const stableFieldAnswer = resolveStableFieldAnswer(
     normalizedLatestUserMessage,
     context
@@ -2335,6 +2423,61 @@ export async function routeAiMessage({
       reply,
       messageType: "conversation",
       provider: "helper",
+      sharedContext: context.sharedContext,
+      businessProfile: context.resolvedBusinessProfile,
+    };
+  }
+
+  if (routeMode === "thinking") {
+    const reply = await runThinkingProvider({
+      messages,
+      contextSummary: providerContextSummary,
+    });
+
+    return {
+      reply,
+      messageType: "conversation",
+      provider: "thinking",
+      sharedContext: context.sharedContext,
+      businessProfile: context.resolvedBusinessProfile,
+    };
+  }
+
+  if (routeMode === "direct") {
+    const reply = await runDirectProvider({
+      messages,
+      contextSummary: providerContextSummary,
+    });
+    const plainReply = reply
+      .split(/\r?\n/)
+      .filter(
+        (line) =>
+          !/^\s*(Situation|Manager Insight|Decision|Today's Priority|Action Steps|Watch|Short Answer|Why|Next Step)\s*[:\-]?\s*$/i.test(
+            line.trim()
+          )
+      )
+      .join("\n")
+      .trim();
+
+    return {
+      reply: plainReply || reply,
+      messageType: "conversation",
+      provider: "direct",
+      sharedContext: context.sharedContext,
+      businessProfile: context.resolvedBusinessProfile,
+    };
+  }
+
+  if (routeMode === "decision") {
+    const reply = await runDecisionProvider({
+      messages,
+      contextSummary: providerContextSummary,
+    });
+
+    return {
+      reply,
+      messageType: "conversation",
+      provider: "decision",
       sharedContext: context.sharedContext,
       businessProfile: context.resolvedBusinessProfile,
     };
@@ -2444,6 +2587,19 @@ export async function routeAiMessage({
     }
 
     if (directTodayFocusIntent) {
+      const businessTypeKnown = hasAnsweredBusinessType(
+        context,
+        getConversationFingerprint(messages)
+      );
+      if (!businessTypeKnown) {
+        return {
+          reply: buildBusinessTypeClarificationQuestion(onboardingLanguageIsEnglish),
+          messageType: "conversation",
+          provider: "advisor",
+          sharedContext: context.sharedContext,
+          businessProfile: context.resolvedBusinessProfile,
+        };
+      }
       return {
         reply: normalizeManagerReply(buildAssumptionLeadManagerReply(context)),
         messageType: "business_strategy",
@@ -2456,6 +2612,19 @@ export async function routeAiMessage({
     // If user is clearly reporting a business problem, prioritize direct execution guidance
     // over onboarding/generic momentum templates.
     if (businessProblemIntent || shouldForceAssumptionDecision(latestUserMessage)) {
+      const businessTypeKnown = hasAnsweredBusinessType(
+        context,
+        getConversationFingerprint(messages)
+      );
+      if (!businessTypeKnown) {
+        return {
+          reply: buildBusinessTypeClarificationQuestion(onboardingLanguageIsEnglish),
+          messageType: "conversation",
+          provider: "advisor",
+          sharedContext: context.sharedContext,
+          businessProfile: context.resolvedBusinessProfile,
+        };
+      }
       return {
         reply: normalizeManagerReply(buildAssumptionLeadManagerReply(context)),
         messageType: "business_strategy",
@@ -2543,6 +2712,19 @@ export async function routeAiMessage({
     }
 
     if (minimumDecisionContextReady || forceManagerModeByLimit) {
+      const businessTypeKnown = hasAnsweredBusinessType(
+        context,
+        getConversationFingerprint(messages)
+      );
+      if (!businessTypeKnown) {
+        return {
+          reply: buildBusinessTypeClarificationQuestion(onboardingLanguageIsEnglish),
+          messageType: "conversation",
+          provider: "advisor",
+          sharedContext: context.sharedContext,
+          businessProfile: context.resolvedBusinessProfile,
+        };
+      }
       return {
         reply: buildFastManagerDecisionReply(context),
         messageType: "business_strategy",
@@ -2585,6 +2767,14 @@ export async function routeAiMessage({
     context,
     previousMessageType
   );
+  const businessTypeKnown = hasAnsweredBusinessType(
+    context,
+    getConversationFingerprint(messages)
+  );
+  const requiresBusinessTypeBeforeManager =
+    businessContextActive &&
+    (messageType === "business_strategy" || messageType === "seasonal_strategy") &&
+    !businessTypeKnown;
   const shouldClarify =
     businessContextActive &&
     !clarificationCapReached &&
@@ -2632,6 +2822,16 @@ export async function routeAiMessage({
         context,
         messages,
       }),
+      messageType: "conversation",
+      provider: "advisor",
+      sharedContext: context.sharedContext,
+      businessProfile: context.resolvedBusinessProfile,
+    };
+  }
+
+  if (requiresBusinessTypeBeforeManager) {
+    return {
+      reply: buildBusinessTypeClarificationQuestion(useEnglishForLatestMessage),
       messageType: "conversation",
       provider: "advisor",
       sharedContext: context.sharedContext,

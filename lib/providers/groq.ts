@@ -19,6 +19,21 @@ type ChatProviderParams = {
   contextSummary: string;
 };
 
+type ThinkingProviderParams = {
+  messages: ChatMessage[];
+  contextSummary: string;
+};
+
+type DecisionProviderParams = {
+  messages: ChatMessage[];
+  contextSummary: string;
+};
+
+type DirectProviderParams = {
+  messages: ChatMessage[];
+  contextSummary: string;
+};
+
 type HelperProviderParams = {
   messages: ChatMessage[];
   contextSummary: string;
@@ -50,7 +65,7 @@ Do not sound like a rigid template engine.
 Rules:
 - First understand the exact user question, then answer that exact question directly.
 - Do not repeat boilerplate lines.
-- Do not force fixed headings unless user explicitly asks for structured format.
+- In Manager Mode, always use the required six-section Neurova manager format.
 - Keep replies human, clear, and context-aware.
 - For business queries, give concrete actions, but keep tone natural.
 - If user language is Hinglish, reply in simple Hinglish.
@@ -84,17 +99,48 @@ function applyTemplateQualityGuard(reply: string, latestUserMessage: string): st
 
   if (isVisualChoiceQuery) {
     return [
-      "Short answer:",
-      "Agar goal sales/footfall hai, to product ka clear photo + offer line tiger image se zyada effective rahega.",
-      "Tiger visual attention la sakta hai, lekin brand-message confuse bhi kar sakta hai.",
-      "Best decision: 3 din A/B test karo (Tiger vs Product+Offer) aur jis se inquiry/footfall zyada aaye wahi final rakho.",
+      "Situation",
+      "Poster choice se sales impact decide hoga.",
+      "",
+      "Manager Insight",
+      "Attention lana alag cheez hai, conversion lana alag. Product + clear offer usually zyada convert karta hai.",
+      "",
+      "Decision",
+      "Aaj product photo + clear offer format ko primary creative rakhenge.",
+      "",
+      "Today's Priority",
+      "1 controlled A/B test chala ke winner creative lock karna.",
+      "",
+      "Action Steps",
+      "1. Do poster banao: A = Tiger visual, B = Product + offer line.",
+      "2. Dono ko same area me equal time window me lagao.",
+      "3. Inquiry/footfall count compare karo aur winner select karo.",
+      "",
+      "Watch",
+      "Har variant ka response count aur walk-in conversion rate track karo.",
     ].join("\n");
   }
 
   return [
-    "Short answer:",
-    "Main aapko direct practical recommendation deta hoon, generic template nahi.",
-    "Apna exact goal batao (sales, footfall, branding), phir main one clear decision aur next steps dunga.",
+    "Situation",
+    "Aapka business goal clear hai, lekin exact priority confirm nahi hai.",
+    "",
+    "Manager Insight",
+    "One clear priority ke bina execution scattered ho jata hai aur result weak aata hai.",
+    "",
+    "Decision",
+    "Ab hum single-priority execution model follow karenge.",
+    "",
+    "Today's Priority",
+    "Aaj ke liye sirf ek measurable goal lock karo: sales, footfall, ya repeat customers.",
+    "",
+    "Action Steps",
+    "1. In teen me se ek goal choose karo jo sabse urgent hai.",
+    "2. Us goal ka 24-hour target number set karo.",
+    "3. Target hit karne ke liye ek on-ground action start karo.",
+    "",
+    "Watch",
+    "Din ke end me target vs actual number compare karo aur next adjustment decide karo.",
   ].join("\n");
 }
 
@@ -164,6 +210,8 @@ Behavior rules:
 - Let the reply sound natural for the current context while staying manager-like.
 - Use a short natural reply for simple greetings, thanks, or identity questions.
 - Ask a clarification question only when one missing detail truly blocks a better decision.
+- Never assume business type. If business type is not explicitly known from user/context, ask exactly one short question first and wait.
+- Do not generate the full manager structure until business type is known.
 - No-Problem Detection:
   If the user says things like sab theek hai, koi problem nahi, sab kuch theek chal raha hai, no issue, or everything is fine,
   stop diagnostic questioning immediately.
@@ -193,7 +241,12 @@ Formatting rules:
 - Do not create extra top-level sections.
 - Do not create empty headings.
 - Only one priority is allowed.
+- Never use labels like "Copy", "Edit", "Short Answer", "Why", or "Next Step" in manager replies.
+- Never give system/process UI instructions like "fill required fields", "click button", "save/test", or "check output panel".
+- Never give generic placeholder instructions. Every action must be a real-world business execution step.
 - Focus on execution, not explanation-heavy frameworks.
+- Reality rule: if a small shop owner cannot do it today, do not include that step.
+- Prefer human-interaction actions: customer calls, WhatsApp follow-up, in-store scripts, local partnerships, and visible offer boards.
 - Every decision must identify the real operating lever such as customer acquisition,
   repeat customers, pricing, visibility, or service quality.
 - The chosen strategy must match the business type and business environment.
@@ -247,6 +300,8 @@ Important behavior:
   "Pichhle 30 din me footfall clearly kam hua hai kya?"
   "Nearby koi naya competitor aaya hai kya?"
 - Do not repeat the same advice in multiple sections.
+- Avoid repeating the exact same Manager Insight line across turns.
+- If a similar issue repeats, rewrite insight with fresh wording tied to the current situation.
 - If the user asks for "step by step" or "detail me", still keep Action Steps to 4 short steps and use the other sections for context.
 - When the user asks multiple things together, synthesize them into one manager decision whenever reasonably possible.
 - Once business type + core problem + impact are known, stop circling and move to manager decision.
@@ -383,53 +438,53 @@ Rules:
 
 const HELPER_MODE_SYSTEM_PROMPT = `
 You are Neurova in Helper Mode.
-In this mode, do practical implementation help only.
+In this mode, do direct execution help only.
 Language policy:
 - Mirror the user's latest message language (English or Hinglish).
 - Keep wording simple and direct.
 Rules:
-- Do not use manager template headings like Situation, Manager Insight, Decision, Priority, Steps, Watch.
-- Do not use Short Answer / Why format.
-- Helper Mode = Execution Mode. Give deep, practical, step-by-step execution.
-- Prefer click-by-click style instructions.
-- Include exact sequence, exact text/examples, and what to check after each step.
-- Avoid generic tips and avoid broad theory.
-- After user confirmation (done/ho gaya/completed), do NOT give theory or concept explanation.
-- After user confirmation, always give the next exact executable step.
-- Never ask user to decide/choose/think what to do next.
-- Forbidden language: "decide karo", "choose karo", "aapko sochna hoga", "you decide", "you can choose".
-- If context is incomplete, make one reasonable assumption and continue with executable steps.
-- Track execution state strictly using the provided state block:
-  current_step, explained_step, completed_step, waiting_for_user_confirmation.
-- Never claim any step is completed unless user explicitly confirmed with done/ho gaya/completed.
-- Forbidden claims when not confirmed: "we have set up", "already configured", "already done", "ho gaya hai".
-- Explain exactly one step per reply.
-- After explaining one step, ask user to execute it and confirm done.
-- If user says "next" without done confirmation, continue explanation for the same step only.
-- Do not reveal internal state to the user (never print current_step/explained_step/completed_step).
-- Use ONLY this output structure for tutorial steps:
-  Step X: [clear action title]
-  👉 What to do:
-  [click-by-click instructions]
-  👉 What you should see:
-  [expected result]
-  👉 If stuck:
-  [common issue + fix]
-  Ho jaye to 'done' likho
-- Step title must be a concrete action command, not a user-description sentence.
-- Do not repeat the user's original sentence as step title.
-- For n8n automation setup, the first step must be:
-  Step 1: n8n account create karo
-  and include:
-  - go to https://n8n.io
-  - sign up
-  - open dashboard
-- If user goal is email confirmation automation, follow this strict sequence:
-  Step 1: n8n account create karo
-  Step 2: New workflow create karo
-  Step 3: Webhook trigger add karo
-  Step 4: Email node add karo
-  Step 5: Webhook aur Email node connect karo
+- Switch to Helper Mode when user asks execution intent such as:
+  "kaise karun", "example do", "line likho", "message do".
+- Do not use manager sections (Situation, Manager Insight, Decision, Today's Priority, Action Steps, Watch).
+- Do not use Short Answer / Why / Next Step labels.
+- Give direct practical output that is ready to use immediately.
+- Prefer real usable outputs: message drafts, example lines, short scripts, exact sequence.
+- Avoid theory, frameworks, and generic process language.
+- If context is incomplete, make one reasonable assumption and continue.
+- Keep tone decisive and concise.
+`.trim();
+
+const THINKING_MODE_SYSTEM_PROMPT = `
+You are Neurova in Thinking Mode.
+Use this mode for decision-risk questions like:
+- "nuksan hoga?"
+- "sahi hai ya galat?"
+- "profit hoga ya nahi?"
+- "risk kya hai?"
+Rules:
+- Do not use manager section headings (Situation, Manager Insight, Decision, Today's Priority, Action Steps, Watch).
+- Do not use template labels (Short Answer, Why, Next Step).
+- Give a direct logical answer first.
+- Explain decision impact clearly in simple Hinglish/English based on user language.
+- Include numbers or a quick example whenever possible.
+- Clearly state risks and when the decision is unsafe.
+- Avoid generic lines and avoid motivational filler.
+- Keep it concise and practical.
+`.trim();
+
+const DECISION_MODE_SYSTEM_PROMPT = `
+You are Neurova in Decision Mode.
+Use this mode when user asks to pick the best option (for example: "kaunsa best hai", "choose karo").
+Rules:
+- Do not use manager section headings.
+- Do not use template labels (Short Answer, Why, Next Step).
+- Pick one best option clearly and confidently.
+- Do not list options again.
+- Do not give theory.
+- Give reason in 1 to 2 short lines only.
+- If helpful, include one small number/example.
+- Keep answer concise, direct, and executable.
+- Avoid listing many alternatives unless user explicitly asks comparison.
 `.trim();
 
 type HelperFallbackStepTemplate = {
@@ -882,66 +937,33 @@ function buildChatModeFallback(latestMessage: string): string {
   return "Samjha. Aap jo discuss karna chahte ho woh batao.";
 }
 
-function inferHelperActionTitle(latestMessage: string): string {
-  const normalized = latestMessage.trim().toLowerCase();
-  if (!normalized) return "Required setup action execute karo";
-
-  if (/\bn8n\b|\bautomation\b/.test(normalized)) {
-    return "n8n account create karo";
-  }
-
-  if (/\bwebhook\b/.test(normalized)) {
-    return "Webhook trigger create karo";
-  }
-
-  if (/\bapi\b|\bintegration\b/.test(normalized)) {
-    return "API connection setup karo";
-  }
-
-  return "Required setup action execute karo";
-}
-
 function buildHelperModeFallback(
   latestMessage: string,
   helperState?: HelperProviderParams["helperState"]
 ): string {
+  const normalized = latestMessage.trim().toLowerCase();
+  if (/\b(line likho|message do|example do)\b/i.test(normalized)) {
+    return [
+      "Yeh ready message use karo:",
+      "\"Namaste [Name], aaj aapke liye special comeback offer hai - [offer]. Aaj aao to main personally apply karwa dunga.\"",
+      "Isko 20 purane customers ko bhejo aur shaam tak replies count note karo.",
+    ].join("\n");
+  }
+
   const step = Math.max(1, helperState?.currentStep ?? 1);
-  const title = inferHelperActionTitle(latestMessage);
   const isN8nSetup = /\bn8n\b|\bautomation\b/i.test(latestMessage) && step === 1;
   if (isN8nSetup) {
     return [
-      "Step 1: n8n account create karo",
-      "",
-      "👉 What to do:",
-      "1. Browser me https://n8n.io open karo.",
-      "2. Sign up button par click karke account create karo.",
-      "3. Login ke baad dashboard screen open karo.",
-      "",
-      "👉 What you should see:",
-      "n8n dashboard open ho jana chahiye jahan workflows create kar sakte ho.",
-      "",
-      "👉 If stuck:",
-      "Agar signup email verify na ho, spam folder check karo aur verification link dobara open karo.",
-      "",
-      "Ho jaye to 'done' likho",
+      "Sabse pehle n8n account banao: https://n8n.io open karo, Sign up karo, phir dashboard login karo.",
+      "Dashboard khul jaaye to 'done' likho, main turant next exact step dunga.",
     ].join("\n");
   }
 
   return [
-    `Step ${step}: ${title}`,
-    "",
-    "👉 What to do:",
-    "1. Required fields/input values fill karo.",
-    "2. Save/Test button click karo.",
-    "3. Output panel/response me result verify karo.",
-    "",
-    "👉 What you should see:",
-    "Success response, webhook hit, ya test payload visible hona chahiye.",
-    "",
-    "👉 If stuck:",
-    "Agar test fail ho, URL/auth fields dobara check karo aur ek fresh test event bhejo.",
-    "",
-    "Ho jaye to 'done' likho",
+    "Isko aise karo:",
+    "1. Ready-to-use line/message draft banao jo user ko direct action de.",
+    "2. Us draft ko small batch me bhejo ya on-ground use karo.",
+    "3. Same din response dekhkar next tweak karo.",
   ].join("\n");
 }
 
@@ -957,29 +979,6 @@ function hasUnconfirmedCompletionClaim(reply: string): boolean {
   return claimPatterns.some((pattern) => pattern.test(text));
 }
 
-function keepSingleStep(reply: string): string {
-  const lines = reply.split(/\r?\n/);
-  const stepLineIndexes = lines
-    .map((line, index) => ({ line: line.trim(), index }))
-    .filter(
-      ({ line }) => /^(?:step\s*)?\d{1,2}\s*[:.)-]\s+/i.test(line)
-    )
-    .map(({ index }) => index);
-
-  if (stepLineIndexes.length <= 1) {
-    return reply;
-  }
-
-  const firstStepIndex = stepLineIndexes[0];
-  const secondStepIndex = stepLineIndexes[1];
-  const kept = lines.slice(0, secondStepIndex);
-  if (firstStepIndex >= 0) {
-    kept.push("Ho jaye to 'done' likho");
-  }
-
-  return kept.join("\n").trim();
-}
-
 function hidesInternalState(reply: string): string {
   return reply
     .split(/\r?\n/)
@@ -993,17 +992,6 @@ function hidesInternalState(reply: string): string {
     .trim();
 }
 
-function hasHelperRequiredFormat(reply: string): boolean {
-  const text = reply.toLowerCase();
-  return (
-    /step\s+\d+\s*:/i.test(reply) &&
-    text.includes("👉 what to do:".toLowerCase()) &&
-    text.includes("👉 what you should see:".toLowerCase()) &&
-    text.includes("👉 if stuck:".toLowerCase()) &&
-    text.includes("ho jaye to 'done' likho")
-  );
-}
-
 function hasForbiddenHelperSections(reply: string): boolean {
   const text = reply.toLowerCase();
   return (
@@ -1012,28 +1000,6 @@ function hasForbiddenHelperSections(reply: string): boolean {
     text.includes("next step") ||
     text.includes("next-step")
   );
-}
-
-function hasNonActionStepTitle(reply: string): boolean {
-  const firstStepLine = reply
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => /^step\s+\d+\s*:/i.test(line));
-  if (!firstStepLine) return true;
-
-  const title = firstStepLine.replace(/^step\s+\d+\s*:\s*/i, "").trim().toLowerCase();
-  if (!title) return true;
-
-  // Avoid reflective/problem-description titles.
-  if (
-    /\b(mujhe|mera|my|i need|i want|problem|issue|karna hai|banana hai|banani hai)\b/i.test(
-      title
-    )
-  ) {
-    return true;
-  }
-
-  return false;
 }
 
 function normalizeHelperReply(
@@ -1056,7 +1022,7 @@ function normalizeHelperReply(
     .trim();
 
   const noInternalState = hidesInternalState(withoutHeadings);
-  const singleStepReply = keepSingleStep(noInternalState);
+  const singleStepReply = noInternalState;
   const requiresStrictNoCompletionClaim = Boolean(
     helperState?.waitingForUserConfirmation &&
       (helperState?.completedStep ?? 0) < (helperState?.explainedStep ?? 0)
@@ -1074,19 +1040,9 @@ function normalizeHelperReply(
     ].join("\n");
   }
 
-  const mustUseN8nFirstStep =
-    /\bn8n\b|\bautomation\b/i.test(latestMessage) &&
-    Math.max(1, helperState?.currentStep ?? 1) === 1;
-  const hasRequiredN8nFirstStep = /step\s*1\s*:\s*n8n account create karo/i.test(
-    singleStepReply
-  );
-
   if (
     !singleStepReply ||
-    hasForbiddenHelperSections(singleStepReply) ||
-    !hasHelperRequiredFormat(singleStepReply) ||
-    hasNonActionStepTitle(singleStepReply) ||
-    (mustUseN8nFirstStep && !hasRequiredN8nFirstStep)
+    hasForbiddenHelperSections(singleStepReply)
   ) {
     return buildHelperModeFallback(latestMessage, helperState);
   }
@@ -1192,3 +1148,293 @@ export async function runHelperProvider({
     buildHelperModeFallback(latestMessage, helperState);
   return normalizeHelperReply(rawReply, latestMessage, helperState);
 }
+
+export async function runThinkingProvider({
+  messages,
+  contextSummary,
+}: ThinkingProviderParams): Promise<string> {
+  const apiKey = process.env.GROQ_API_KEY;
+  const compactSummary = compactContextSummary(contextSummary);
+  const systemContent = `${THINKING_MODE_SYSTEM_PROMPT}\n\nStructured business context:\n${compactSummary}`;
+  const historyMessages = buildGuardedMessageHistory(messages, systemContent);
+
+  const stripStructuredHeadings = (value: string) =>
+    sanitizeIdentityWording(value)
+      .split(/\r?\n/)
+      .filter(
+        (line) =>
+          !/^\s*(Situation|Manager Insight|Decision|Today's Priority|Action Steps|Watch|Short Answer|Why|Next Step)\s*[:\-]?\s*$/i.test(
+            line.trim()
+          )
+      )
+      .join("\n")
+      .trim();
+
+  const normalizeThinkingReply = (value: string): string => {
+    const cleaned = stripStructuredHeadings(value);
+    const normalized = cleaned.toLowerCase();
+    const discountMatch = normalized.match(/(\d{1,2})\s*%\s*(discount|off)/i);
+    const discountPercent = discountMatch ? Number.parseInt(discountMatch[1], 10) : null;
+
+    if (discountPercent && Number.isFinite(discountPercent)) {
+      const safeMargin = discountPercent + 5;
+      return [
+        `Agar net margin ${safeMargin}%+ hai -> yeh safe hai.`,
+        `Agar net margin ${discountPercent}% se kam hai -> loss risk high hai.`,
+        "Best option: Rs300 par Rs20 off jaisa fixed offer rakho.",
+      ].join("\n");
+    }
+
+    const lines = cleaned
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => line.replace(/^[-**]\s+|^\d+[.)]\s+/, "").trim())
+      .filter(Boolean)
+      .filter((line) => !/\b(ho sakta hai|shayad|depends)\b/i.test(line.toLowerCase()));
+
+    const deduped = Array.from(new Map(lines.map((line) => [line.toLowerCase(), line])).values());
+    const first = deduped[0] ?? "Agar net margin 20%+ hai -> safe hai.";
+    const second = deduped[1] ?? "Agar net margin 10-15% hai -> risk high hai.";
+    const best =
+      deduped.find((line) => /\bbest option\b/i.test(line)) ??
+      "Best option: fixed discount low rakho aur margin bachao.";
+    return [first, second, best].join("\n");
+  };
+
+  const geminiReply = await runGeminiTextGeneration({
+    systemContent: buildGeminiSystemContent(systemContent),
+    messages: historyMessages,
+    temperature: 0.2,
+  });
+  if (geminiReply) {
+    return normalizeThinkingReply(geminiReply);
+  }
+
+  if (!apiKey) {
+    return "Agar net margin 20%+ hai to safe hai. Agar 10-15% hai to risk high hai.\nBest option: fixed discount low rakho.";
+  }
+
+  const groq = new Groq({ apiKey });
+  console.log("[provider] Using Groq fallback for thinking response.");
+  const completion = await groq.chat.completions.create({
+    model: "llama-3.1-8b-instant",
+    temperature: 0.2,
+    messages: [
+      {
+        role: "system",
+        content: systemContent,
+      },
+      ...historyMessages,
+    ],
+  });
+
+  const rawReply =
+    completion.choices[0]?.message?.content?.trim() ||
+    "Agar net margin 20%+ hai to safe hai. Agar 10-15% hai to risk high hai.";
+  return normalizeThinkingReply(rawReply);
+}
+
+export async function runDecisionProvider({
+  messages,
+  contextSummary,
+}: DecisionProviderParams): Promise<string> {
+  const apiKey = process.env.GROQ_API_KEY;
+  const compactSummary = compactContextSummary(contextSummary);
+  const systemContent = `${DECISION_MODE_SYSTEM_PROMPT}\n\nStructured business context:\n${compactSummary}`;
+  const historyMessages = buildGuardedMessageHistory(messages, systemContent);
+
+  const stripStructuredHeadings = (value: string) =>
+    sanitizeIdentityWording(value)
+      .split(/\r?\n/)
+      .filter(
+        (line) =>
+          !/^\s*(Situation|Manager Insight|Decision|Today's Priority|Action Steps|Watch|Short Answer|Why|Next Step)\s*[:\-]?\s*$/i.test(
+            line.trim()
+          )
+      )
+      .join("\n")
+      .trim();
+
+  const normalizeDecisionReply = (value: string): string => {
+    const cleaned = stripStructuredHeadings(value);
+    if (!cleaned) {
+      return "Best option Rs300 par Rs20 off hai.\nIsse offer attractive rehta hai aur margin control me rehta hai.";
+    }
+
+    const normalizedLines = cleaned
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => line.replace(/^[-**]\s+|^\d+[.)]\s+/, "").trim())
+      .filter(Boolean);
+
+    const joined = normalizedLines.join(" ");
+    const sentenceParts = joined
+      .split(/(?<=[.!?])\s+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    const firstLine =
+      sentenceParts[0] ??
+      normalizedLines[0] ??
+      "Best option Rs300 par Rs20 off hai.";
+    const secondLine =
+      sentenceParts[1] ??
+      normalizedLines[1] ??
+      "Isse customer attract hota hai aur profit control me rehta hai.";
+
+    return [firstLine, secondLine].join("\n");
+  };
+
+  const geminiReply = await runGeminiTextGeneration({
+    systemContent: buildGeminiSystemContent(systemContent),
+    messages: historyMessages,
+    temperature: 0.2,
+  });
+  if (geminiReply) {
+    return normalizeDecisionReply(geminiReply);
+  }
+
+  if (!apiKey) {
+    return "Best option Rs300 par Rs20 off hai.\nIsse offer attractive rehta hai aur margin control me rehta hai.";
+  }
+
+  const groq = new Groq({ apiKey });
+  console.log("[provider] Using Groq fallback for decision response.");
+  const completion = await groq.chat.completions.create({
+    model: "llama-3.1-8b-instant",
+    temperature: 0.2,
+    messages: [
+      {
+        role: "system",
+        content: systemContent,
+      },
+      ...historyMessages,
+    ],
+  });
+
+  const rawReply =
+    completion.choices[0]?.message?.content?.trim() ||
+    "Best option woh hai jisme immediate response aur low risk dono milte hain.";
+  return normalizeDecisionReply(rawReply);
+}
+
+export async function runDirectProvider({
+  messages,
+  contextSummary,
+}: DirectProviderParams): Promise<string> {
+  const apiKey = process.env.GROQ_API_KEY;
+  const latestMessage = messages[messages.length - 1]?.content?.trim() ?? "";
+  const compactSummary = compactContextSummary(contextSummary);
+  const mode = "direct" as const;
+  let prompt = `${BASE_SYSTEM_PROMPT}\n\n${COMMON_RESPONSE_RULES}\n\nStructured business context:\n${compactSummary}`;
+  if (mode === "direct") {
+    prompt = `
+You are Neurova.
+
+Answer the user's question directly.
+
+Rules:
+- No sections
+- No headings
+- No structure
+- No "Situation / Insight / Decision"
+- Keep answer short and logical
+- No vague words: "ho sakta hai", "shayad", "depends"
+- Give clear IF condition logic
+- Use simple numbers/examples (margin %, Rs values)
+- Do not repeat same sentence
+- End with one clear line starting with "Best option:"
+
+User question:
+${latestMessage || "Answer directly in plain text."}
+`.trim();
+  }
+  console.log("FINAL PROMPT:", prompt);
+
+  const historyMessages: ChatMessage[] = latestMessage
+    ? [{ role: "user", content: latestMessage }]
+    : [{ role: "user", content: "Answer directly in plain text." }];
+
+  const stripStructuredHeadings = (value: string) =>
+    sanitizeIdentityWording(value)
+      .split(/\r?\n/)
+      .filter(
+        (line) =>
+          !/^\s*(Situation|Manager Insight|Decision|Today's Priority|Action Steps|Watch|Short Answer|Why|Next Step)\s*[:\-]?\s*$/i.test(
+            line.trim()
+          )
+      )
+      .join("\n")
+      .trim();
+
+  const normalizeDirectReply = (value: string): string => {
+    const cleaned = stripStructuredHeadings(value);
+    const normalizedInput = (latestMessage || cleaned).toLowerCase();
+    const discountMatch = normalizedInput.match(/(\d{1,2})\s*%\s*(discount|off)?/i);
+    const discountPercent = discountMatch ? Number.parseInt(discountMatch[1], 10) : null;
+
+    if (discountPercent && Number.isFinite(discountPercent)) {
+      const safeMargin = discountPercent + 5;
+      return [
+        `Agar net margin ${safeMargin}%+ hai -> safe hai.`,
+        `Agar net margin ${discountPercent}% se kam hai -> nuksan hoga.`,
+        "Best option: Rs300 par Rs20 off rakho taaki margin control me rahe.",
+      ].join("\n");
+    }
+
+    const directLines = cleaned
+      .split(/\r?\n/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => part.replace(/^[-**]\s+|^\d+[.)]\s+/, "").trim())
+      .filter(Boolean)
+      .filter((line) => !/\b(ho sakta hai|shayad|depends)\b/i.test(line.toLowerCase()));
+
+    const dedupedLines = Array.from(
+      new Map(directLines.map((line) => [line.toLowerCase(), line])).values()
+    );
+
+    const firstLine = dedupedLines[0] ?? "Agar net margin 20%+ hai -> safe hai.";
+    const secondLine = dedupedLines[1] ?? "Agar net margin 10-15% hai -> loss risk high hai.";
+    const bestLine =
+      dedupedLines.find((line) => /\bbest option\b/i.test(line)) ??
+      "Best option: fixed rupee discount rakho taaki margin predictable rahe.";
+
+    return [firstLine, secondLine, bestLine].join("\n");
+  };
+
+  const geminiReply = await runGeminiTextGeneration({
+    systemContent: prompt,
+    messages: historyMessages,
+    temperature: 0.2,
+  });
+  if (geminiReply) {
+    return normalizeDirectReply(geminiReply);
+  }
+
+  if (!apiKey) {
+    return "Agar net margin 20%+ hai -> safe hai.\nAgar net margin 10-15% hai -> loss risk high hai.\nBest option: Rs300 par Rs20 off rakho.";
+  }
+
+  const groq = new Groq({ apiKey });
+  console.log("[provider] Using Groq fallback for direct response.");
+  const completion = await groq.chat.completions.create({
+    model: "llama-3.1-8b-instant",
+    temperature: 0.2,
+    messages: [
+      {
+        role: "system",
+        content: prompt,
+      },
+      ...historyMessages,
+    ],
+  });
+
+  const rawReply =
+    completion.choices[0]?.message?.content?.trim() ||
+    "Agar net margin 20%+ hai -> safe hai. Agar 10-15% hai -> loss risk high hai.";
+  return normalizeDirectReply(rawReply);
+}
+

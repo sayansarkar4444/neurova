@@ -91,11 +91,11 @@ function buildNonRepeatingFallback(
     /\b(kaise|how to|how do i|how should i|step by step)\b/i.test(normalizedQuestion);
   if (asksHowTo) {
     return [
-      "Isko practical tareeke se karo, generic nahi:",
-      "Step 1: Desired outcome one line me define karo.",
-      "Step 2: Required inputs/tools list karo aur missing items close karo.",
-      "Step 3: Execution karo, phir result metric note karke next step finalize karo.",
-      "Agar chaaho to main isi topic ka click-by-click version abhi de sakta hoon.",
+      "Isko aise practical tareeke se karo:",
+      "Step 1: Aaj 10 purane customers ko personal WhatsApp message bhejo with comeback offer.",
+      "Step 2: Dukan ke bahar clear offer board lagao taaki walk-ins ko reason mile.",
+      "Step 3: Shaam tak kitne replies/visits aaye woh note karo aur us basis par next move set karo.",
+      "Chaaho to main isi case ka exact message text bhi de deta hoon.",
     ].join("\n");
   }
 
@@ -845,10 +845,19 @@ export async function POST(request: Request) {
     console.log("[PROFILE SAVE] success/failure = success");
     console.log("[PROFILE CONTEXT] refreshed profile =", safeBusinessProfile);
 
-    const finalReply = enforceNoRepeatReply(result.reply, effectiveMessages);
+    const shouldBypassRepeatGuard =
+      result.provider === "direct" ||
+      result.provider === "thinking" ||
+      result.provider === "decision" ||
+      result.provider === "helper";
+    const finalReply = shouldBypassRepeatGuard
+      ? result.reply
+      : enforceNoRepeatReply(result.reply, effectiveMessages);
 
     return NextResponse.json({
       reply: finalReply,
+      provider: result.provider,
+      messageType: result.messageType,
       sharedContext: result.sharedContext,
       businessProfile: safeBusinessProfile,
       suggestedProfileUpdates: pendingSuggestedUpdates,

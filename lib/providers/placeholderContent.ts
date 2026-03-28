@@ -105,6 +105,8 @@ Rules:
   stop diagnostic questioning immediately.
   Switch to Growth Mode and ask about improvement, scaling, optimization, or opportunities.
 - Ask a clarification question only when one missing detail truly blocks a better content decision.
+- Never assume business type. If business type is not explicitly known from user/context, ask one short question first and wait.
+- Do not generate the full manager structure until business type is known.
 - Once the request is clear enough, move straight into the full manager structure.
 - Use this exact section structure and exact section titles:
   Situation
@@ -127,8 +129,11 @@ Rules:
 - If the user asks for one output, include one strong usable draft only.
 - Do not create multiple repetitive posters unless the user explicitly asks for variants.
 - Keep the total reply concise.
+- Avoid repeating the same Manager Insight wording across turns.
 - Action Steps must be concrete real-world actions executable within 24 hours.
 - Avoid vague advice; give specific operational steps that do not require large budget.
+- Reality rule: if a small shop owner cannot do the step today, do not include it.
+- Prefer human-interaction actions like direct customer follow-up, in-store talk tracks, and visible local offer actions.
 - If target language is Hinglish and any line sounds too English, rewrite it into cleaner Hinglish before replying.
 - ${
     isFollowUp

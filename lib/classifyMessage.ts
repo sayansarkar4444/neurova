@@ -25,6 +25,12 @@ const TYPO_NORMALIZATIONS: Array<[RegExp, string]> = [
   [/\bddown\b/g, "down"],
   [/\bcoustomer\b/g, "customer"],
   [/\bcustmer\b/g, "customer"],
+  [/\bcostomer\b/g, "customer"],
+  [/\bcoustomers\b/g, "customers"],
+  [/\bcostomers\b/g, "customers"],
+  [/\bdukaan\b/g, "dukan"],
+  [/\bdookan\b/g, "dukan"],
+  [/\bdukkan\b/g, "dukan"],
 ];
 
 const CALCULATION_KEYWORDS = [
@@ -82,6 +88,8 @@ const BUSINESS_STRATEGY_KEYWORDS = [
   "plan",
   "store",
   "shop",
+  "dukan",
+  "dokan",
   "compete",
   "competition",
   "retention",
@@ -160,6 +168,8 @@ const BUSINESS_PROBLEM_KEYWORDS = [
   "customer",
   "customers",
   "business",
+  "dukan",
+  "dokan",
   "problem",
   "issue",
   "trust",
@@ -253,12 +263,22 @@ const FOLLOW_UP_PHRASES = [
   "aur",
 ];
 
-const HELPER_MODE_KEYWORDS = [
+const HELPER_MODE_TECHNICAL_KEYWORDS = [
   "automation",
   "automate",
   "n8n",
   "workflow",
+  "webhook",
+  "trigger",
+  "node",
   "api setup",
+  "api",
+  "integration",
+  "zapier",
+  "make.com",
+];
+
+const HELPER_MODE_INSTRUCTIONAL_KEYWORDS = [
   "kaise",
   "kaise kare",
   "kaise karu",
@@ -276,6 +296,14 @@ const HELPER_MODE_KEYWORDS = [
   "banayein",
 ];
 
+const HELPER_MODE_DIRECT_TRIGGER_PHRASES = [
+  "kaise karun",
+  "kaise karu",
+  "example do",
+  "line likho",
+  "message do",
+];
+
 const HELPER_MODE_EXCLUSIONS = [
   "how are you",
   "kaise ho",
@@ -283,6 +311,23 @@ const HELPER_MODE_EXCLUSIONS = [
   "tum kaise ho",
   "who are you",
   "what are you",
+];
+
+const HELPER_MODE_BUSINESS_EXCLUSIONS = [
+  "business",
+  "sales",
+  "customer",
+  "customers",
+  "retention",
+  "footfall",
+  "shop",
+  "store",
+  "dukan",
+  "dukkan",
+  "dokan",
+  "marketing",
+  "offer",
+  "profit",
 ];
 
 function escapeRegex(value: string): string {
@@ -334,10 +379,28 @@ export function isHelperModeIntent(message: string): boolean {
     return false;
   }
 
-  const hasHelperSignal = HELPER_MODE_KEYWORDS.some((keyword) =>
+  const hasDirectTrigger = HELPER_MODE_DIRECT_TRIGGER_PHRASES.some((phrase) =>
+    includesKeyword(normalizedMessage, phrase)
+  );
+  if (hasDirectTrigger) {
+    return true;
+  }
+
+  // Keep helper mode for technical setup/tutorial flows,
+  // not for business-strategy "kaise" questions.
+  if (includesAnyKeyword(normalizedMessage, HELPER_MODE_BUSINESS_EXCLUSIONS)) {
+    return false;
+  }
+
+  const hasTechnicalSignal = HELPER_MODE_TECHNICAL_KEYWORDS.some((keyword) =>
     includesKeyword(normalizedMessage, keyword)
   );
-  if (!hasHelperSignal) return false;
+  if (!hasTechnicalSignal) return false;
+
+  const hasInstructionalSignal = HELPER_MODE_INSTRUCTIONAL_KEYWORDS.some((keyword) =>
+    includesKeyword(normalizedMessage, keyword)
+  );
+  if (!hasInstructionalSignal) return false;
 
   // Avoid one-word ambiguous turns like just "how".
   if (normalizedMessage.split(" ").length <= 1) {
@@ -345,6 +408,26 @@ export function isHelperModeIntent(message: string): boolean {
   }
 
   return true;
+}
+
+export function isThinkingModeIntent(message: string): boolean {
+  const normalizedMessage = normalizeMessage(message);
+  if (!normalizedMessage) return false;
+
+  const triggers = [
+    "nuksan hoga",
+    "nuksaan hoga",
+    "loss hoga",
+    "sahi hai ya galat",
+    "right or wrong",
+    "profit hoga ya nahi",
+    "profit hoga ki nahi",
+    "risk kya hai",
+    "what is the risk",
+    "is it risky",
+  ];
+
+  return triggers.some((phrase) => includesKeyword(normalizedMessage, phrase));
 }
 
 export function isBusinessProblemIntent(message: string): boolean {

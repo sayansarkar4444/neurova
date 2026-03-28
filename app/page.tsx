@@ -66,6 +66,7 @@ type Message = {
   text: string;
   attachments?: MessageAttachment[];
   kind?: "thinking";
+  renderMode?: "plain" | "structured";
 };
 
 type ChatSession = {
@@ -80,6 +81,22 @@ type ChatApiMessage = {
   role: "user" | "assistant";
   content: string;
 };
+
+type AssistantApiProvider =
+  | "advisor"
+  | "chat"
+  | "helper"
+  | "thinking"
+  | "decision"
+  | "direct"
+  | "deepseek-reasoning"
+  | "content";
+type AssistantApiMessageType =
+  | "conversation"
+  | "business_strategy"
+  | "seasonal_strategy"
+  | "calculation"
+  | "marketing_content";
 
 type PendingAttachment = {
   id: string;
@@ -210,10 +227,29 @@ type ParsedManagerSection = {
 };
 
 type StructuredReplySection = {
-  title: "Short Answer" | "Why" | "Next Step" | "Watch";
+  title:
+    | "Situation"
+    | "Manager Insight"
+    | "Decision"
+    | "Today's Priority"
+    | "Action Steps"
+    | "Watch"
+    | "Short Answer"
+    | "Why"
+    | "Next Step";
   content: string;
   variant?: "text" | "steps";
 };
+
+function formatStructuredSectionTitle(title: StructuredReplySection["title"]): string {
+  if (title === "Situation") return "🧠 Situation";
+  if (title === "Manager Insight") return "⚡ Manager Insight";
+  if (title === "Decision") return "🎯 Decision";
+  if (title === "Today's Priority") return "📌 Today's Priority";
+  if (title === "Action Steps") return "✅ Action Steps";
+  if (title === "Watch") return "👀 Watch";
+  return title;
+}
 
 function normalizeSharedContext(
   candidate: Partial<SharedBusinessContext> | null | undefined
@@ -301,49 +337,25 @@ function buildStructuredFromManagerSections(
   sections: ParsedManagerSection[]
 ): StructuredReplySection[] | null {
   const byTitle = new Map(sections.map((item) => [item.title, item.content.trim()]));
-  const decision = byTitle.get("Decision") ?? "";
-  const priority = byTitle.get("Today's Priority") ?? "";
-  const insight = byTitle.get("Manager Insight") ?? "";
-  const situation = byTitle.get("Situation") ?? "";
-  const actionSteps = byTitle.get("Action Steps") ?? "";
-  const watch = byTitle.get("Watch") ?? "";
-
-  const shortAnswer = decision || priority || situation;
-  const why = insight || situation;
-  const steps = extractStepLines(actionSteps);
-
   const structured: StructuredReplySection[] = [];
-  if (shortAnswer) {
+
+  for (const title of MANAGER_SECTION_TITLES) {
+    const content = byTitle.get(title)?.trim();
+    if (!content) continue;
+
+    if (title === "Action Steps") {
+      const steps = extractStepLines(content);
+      structured.push({
+        title,
+        content: steps.length > 0 ? steps.join("\n") : content,
+        variant: steps.length > 0 ? "steps" : "text",
+      });
+      continue;
+    }
+
     structured.push({
-      title: "Short Answer",
-      content: shortAnswer,
-      variant: "text",
-    });
-  }
-  if (why) {
-    structured.push({
-      title: "Why",
-      content: why,
-      variant: "text",
-    });
-  }
-  if (steps.length > 0) {
-    structured.push({
-      title: "Next Step",
-      content: steps.join("\n"),
-      variant: "steps",
-    });
-  } else if (priority) {
-    structured.push({
-      title: "Next Step",
-      content: priority,
-      variant: "text",
-    });
-  }
-  if (watch) {
-    structured.push({
-      title: "Watch",
-      content: watch,
+      title,
+      content,
       variant: "text",
     });
   }
@@ -716,6 +728,7 @@ export default function Home() {
         id: createId(),
         role: "assistant",
         text,
+        renderMode: "plain",
       },
     ]);
   };
@@ -1678,6 +1691,51 @@ export default function Home() {
     ));
   };
 
+  const renderMinimalAssistantContent = (text: string) => {
+    const blocks = text
+      .split(/\n{2,}/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    if (blocks.length === 0) {
+      return <p className="whitespace-pre-wrap break-words">{text}</p>;
+    }
+
+    return blocks.map((block, index) => {
+      const lines = block
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const listLines = lines
+        .filter((line) => /^[-*•]\s+|^\d+[.)]\s+/.test(line))
+        .map((line) => line.replace(/^[-*•]\s+|^\d+[.)]\s+/, "").trim())
+        .filter(Boolean);
+      const isListBlock = lines.length > 0 && listLines.length === lines.length;
+
+      if (isListBlock) {
+        return (
+          <ul key={`list-${index}`} className={`${index > 0 ? "mt-2.5" : ""} space-y-1.5`}>
+            {listLines.map((line, listIndex) => (
+              <li key={`li-${index}-${listIndex}`} className="flex items-start gap-2">
+                <span className="mt-[0.45rem] inline-block h-1.5 w-1.5 rounded-full bg-current opacity-75" />
+                <span className="whitespace-pre-wrap break-words">{line}</span>
+              </li>
+            ))}
+          </ul>
+        );
+      }
+
+      return (
+        <p
+          key={`p-${index}-${block.slice(0, 24)}`}
+          className={`${index > 0 ? "mt-2.5" : ""} whitespace-pre-wrap break-words`}
+        >
+          {block}
+        </p>
+      );
+    });
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     if (!currentUser) return;
     event.preventDefault();
@@ -1814,12 +1872,23 @@ export default function Home() {
 
       const data = (await response.json()) as {
         reply?: string;
+        provider?: AssistantApiProvider;
+        messageType?: AssistantApiMessageType;
         sharedContext?: Partial<SharedBusinessContext>;
         businessProfile?: Partial<BusinessProfile>;
         suggestedProfileUpdates?: Partial<ProfileUpdateSuggestion>[];
       };
       const aiText =
         data.reply?.trim() || "Main abhi proper reply generate nahi kar paya.";
+      const assistantRenderMode: Message["renderMode"] =
+        data.provider === "helper"
+          ? "plain"
+          : data.messageType === "business_strategy" ||
+              data.messageType === "seasonal_strategy" ||
+              data.messageType === "calculation" ||
+              data.messageType === "marketing_content"
+            ? "structured"
+            : "plain";
       const extractedPriority = extractPriorityFromReply(aiText);
 
       if (extractedPriority) {
@@ -1891,6 +1960,7 @@ export default function Home() {
         id: createId(),
         role: "assistant",
         text: aiText,
+        renderMode: assistantRenderMode,
       };
 
       upsertSessionMessages(sessionId, (prev) => [
@@ -1902,6 +1972,7 @@ export default function Home() {
         id: createId(),
         role: "assistant",
         text: "Neurova abhi connect nahi ho paaya. Thodi der baad phir try karo.",
+        renderMode: "plain",
       };
 
       upsertSessionMessages(sessionId, (prev) => [
@@ -1993,7 +2064,7 @@ export default function Home() {
   if (!isAuthChecked) {
     return (
       <div
-        className={`min-h-screen overflow-x-hidden ${isLightTheme ? "bg-[#edf4ff] text-slate-900" : "bg-[#0B0F2B] text-slate-100"}`}
+        className={`min-h-[100dvh] overflow-x-hidden ${isLightTheme ? "bg-[#edf4ff] text-slate-900" : "bg-[#0B0F2B] text-slate-100"}`}
       />
     );
   }
@@ -2017,7 +2088,7 @@ export default function Home() {
 
   return (
     <div
-      className={`min-h-screen overflow-x-hidden ${isLightTheme ? "bg-[#f7f7f8] text-[#1f2937]" : "bg-[#0B0F2B] text-slate-100"}`}
+      className={`min-h-[100dvh] overflow-x-hidden ${isLightTheme ? "bg-[#f7f7f8] text-[#1f2937]" : "bg-[#0B0F2B] text-slate-100"}`}
     >
       {isMobileSidebarOpen ? (
         <button
@@ -2303,9 +2374,9 @@ export default function Home() {
           isSidebarCollapsed ? "lg:pl-[4.1rem]" : "lg:pl-[14.5rem]"
         }`}
       >
-      <div className="mx-auto flex h-screen w-full max-w-[80rem] flex-col px-2 pb-2 pt-2 sm:px-4 sm:pb-4 lg:px-6">
+      <div className="mx-auto flex h-[100dvh] min-h-0 w-full max-w-[80rem] flex-col px-2 pb-2 pt-2 sm:px-4 sm:pb-4 lg:px-6">
         <header
-          className={`sticky top-0 z-30 py-0.5 backdrop-blur-md ${
+          className={`sticky top-0 z-30 shrink-0 py-0.5 backdrop-blur-md ${
             isLightTheme
               ? "border-b border-[#e5e7eb] bg-[#f7f7f8]/95"
               : "border-b border-white/8 bg-[#0B0F2B]/90"
@@ -2574,16 +2645,18 @@ export default function Home() {
                       ) : (
                         (() => {
                           const structuredSections = parseStructuredReplySections(message.text);
+                          const shouldUseStructured =
+                            message.renderMode !== "plain" && Boolean(structuredSections);
 
-                          if (!structuredSections) {
+                          if (!shouldUseStructured || !structuredSections) {
                             return (
                               <div className="group flex w-full max-w-[88%] flex-col items-start sm:max-w-[84%] md:max-w-[65%]">
-                                <div className={`w-full rounded-[24px] rounded-tl-md border px-4 py-3 text-[15px] font-medium leading-[1.62] shadow-[0_10px_26px_rgba(3,8,23,0.26)] ${
+                                <div className={`w-full rounded-[20px] rounded-tl-md border px-4 py-3 text-[15px] font-medium leading-[1.62] ${
                                   isLightTheme
-                                    ? "border-slate-300 bg-white text-slate-800 shadow-[0_4px_12px_rgba(15,23,42,0.08)]"
-                                    : "border-white/14 bg-slate-900/62 text-slate-100"
+                                    ? "border-slate-300 bg-white text-slate-800 shadow-[0_2px_8px_rgba(15,23,42,0.06)]"
+                                    : "border-white/14 bg-slate-900/58 text-slate-100"
                                 }`}>
-                                  {renderMessageParagraphs(message.text)}
+                                  {renderMinimalAssistantContent(message.text)}
                                 </div>
                                 <div className="mt-1 flex items-center gap-1 opacity-100 transition sm:pointer-events-none sm:opacity-0 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100">
                                   <button
@@ -2623,7 +2696,7 @@ export default function Home() {
                                           isLightTheme ? "text-slate-500" : "text-cyan-200/88"
                                         }`}
                                       >
-                                        {section.title}
+                                        {formatStructuredSectionTitle(section.title)}
                                       </h2>
                                       {section.variant === "steps" ? (
                                         <ol className="mt-2 space-y-2">
@@ -2698,7 +2771,7 @@ export default function Home() {
             </div>
           </section>
 
-          <div className="sticky bottom-0 z-20 mx-auto mt-1 w-full pb-[max(0.55rem,env(safe-area-inset-bottom))] pt-2.5 sm:pt-3">
+          <div className="z-20 mx-auto mt-1 w-full shrink-0 pb-[max(0.55rem,env(safe-area-inset-bottom))] pt-2.5 sm:pt-3">
             <div className="mb-1.5 px-2 sm:px-3">
               <p className={`text-xs ${isLightTheme ? "text-slate-500" : "text-slate-400"}`}>
                 {mode === "chat"
